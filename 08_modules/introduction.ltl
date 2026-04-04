@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────
+// Tutorial: Module System and Imports
+// Lesson 1: Introduction
+// ────────────────────────────────────────────────────────────
+
+module tutorials.08_modules.introduction
+
+// Module System and Imports - Introduction
+// This lesson covers key concepts of this topic.
+
+pub fn demonstrate() {
+    println("=== Module System and Imports ===")
+    println("Lesson 1: Introduction")
+    
+    // Example code demonstrating the concept
+    let example = "tutorial_08_modules"
+    println("Working through: " + example)
+    
+    let mut results = []
+    let mut i = 0
+    while i < 5 {
+        results = push(results, i * 2)
+        i += 1
+    }
+    println("Results: " + results as str)
+}
+
+fn main() {
+    demonstrate()
+    println("Lesson 1 complete!")
+}

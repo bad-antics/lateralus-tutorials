@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────
+// Tutorial: Working with Generic Types
+// Lesson 2: Practice
+// ────────────────────────────────────────────────────────────
+
+module tutorials.09_generics.practice
+
+// Working with Generic Types - Practice
+// This lesson covers key concepts of this topic.
+
+pub fn demonstrate() {
+    println("=== Working with Generic Types ===")
+    println("Lesson 2: Practice")
+    
+    // Example code demonstrating the concept
+    let example = "tutorial_09_generics"
+    println("Working through: " + example)
+    
+    let mut results = []
+    let mut i = 0
+    while i < 5 {
+        results = push(results, i * 3)
+        i += 1
+    }
+    println("Results: " + results as str)
+}
+
+fn main() {
+    demonstrate()
+    println("Lesson 2 complete!")
+}

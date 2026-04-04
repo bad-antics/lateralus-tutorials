@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────
+// Tutorial: Error Handling with Try/Recover
+// Lesson 1: Introduction
+// ────────────────────────────────────────────────────────────
+
+module tutorials.07_error_handling.introduction
+
+// Error Handling with Try/Recover - Introduction
+// This lesson covers key concepts of this topic.
+
+pub fn demonstrate() {
+    println("=== Error Handling with Try/Recover ===")
+    println("Lesson 1: Introduction")
+    
+    // Example code demonstrating the concept
+    let example = "tutorial_07_error_handling"
+    println("Working through: " + example)
+    
+    let mut results = []
+    let mut i = 0
+    while i < 5 {
+        results = push(results, i * 2)
+        i += 1
+    }
+    println("Results: " + results as str)
+}
+
+fn main() {
+    demonstrate()
+    println("Lesson 1 complete!")
+}

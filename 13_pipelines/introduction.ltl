@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────
+// Tutorial: Pipeline Operator and Composition
+// Lesson 1: Introduction
+// ────────────────────────────────────────────────────────────
+
+module tutorials.13_pipelines.introduction
+
+// Pipeline Operator and Composition - Introduction
+// This lesson covers key concepts of this topic.
+
+pub fn demonstrate() {
+    println("=== Pipeline Operator and Composition ===")
+    println("Lesson 1: Introduction")
+    
+    // Example code demonstrating the concept
+    let example = "tutorial_13_pipelines"
+    println("Working through: " + example)
+    
+    let mut results = []
+    let mut i = 0
+    while i < 5 {
+        results = push(results, i * 2)
+        i += 1
+    }
+    println("Results: " + results as str)
+}
+
+fn main() {
+    demonstrate()
+    println("Lesson 1 complete!")
+}

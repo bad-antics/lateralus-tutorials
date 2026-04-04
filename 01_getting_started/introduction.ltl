@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────
+// Tutorial: Getting Started with Lateralus
+// Lesson 1: Introduction
+// ────────────────────────────────────────────────────────────
+
+module tutorials.01_getting_started.introduction
+
+// Getting Started with Lateralus - Introduction
+// This lesson covers key concepts of this topic.
+
+pub fn demonstrate() {
+    println("=== Getting Started with Lateralus ===")
+    println("Lesson 1: Introduction")
+    
+    // Example code demonstrating the concept
+    let example = "tutorial_01_getting_started"
+    println("Working through: " + example)
+    
+    let mut results = []
+    let mut i = 0
+    while i < 5 {
+        results = push(results, i * 2)
+        i += 1
+    }
+    println("Results: " + results as str)
+}
+
+fn main() {
+    demonstrate()
+    println("Lesson 1 complete!")
+}

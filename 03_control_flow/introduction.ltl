@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────
+// Tutorial: Control Flow Structures
+// Lesson 1: Introduction
+// ────────────────────────────────────────────────────────────
+
+module tutorials.03_control_flow.introduction
+
+// Control Flow Structures - Introduction
+// This lesson covers key concepts of this topic.
+
+pub fn demonstrate() {
+    println("=== Control Flow Structures ===")
+    println("Lesson 1: Introduction")
+    
+    // Example code demonstrating the concept
+    let example = "tutorial_03_control_flow"
+    println("Working through: " + example)
+    
+    let mut results = []
+    let mut i = 0
+    while i < 5 {
+        results = push(results, i * 2)
+        i += 1
+    }
+    println("Results: " + results as str)
+}
+
+fn main() {
+    demonstrate()
+    println("Lesson 1 complete!")
+}

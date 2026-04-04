@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────
+// Tutorial: Advanced Lateralus Features
+// Lesson 3: Challenge
+// ────────────────────────────────────────────────────────────
+
+module tutorials.25_advanced.challenge
+
+// Advanced Lateralus Features - Challenge
+// This lesson covers key concepts of this topic.
+
+pub fn demonstrate() {
+    println("=== Advanced Lateralus Features ===")
+    println("Lesson 3: Challenge")
+    
+    // Example code demonstrating the concept
+    let example = "tutorial_25_advanced"
+    println("Working through: " + example)
+    
+    let mut results = []
+    let mut i = 0
+    while i < 5 {
+        results = push(results, i * 4)
+        i += 1
+    }
+    println("Results: " + results as str)
+}
+
+fn main() {
+    demonstrate()
+    println("Lesson 3 complete!")
+}

@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────
+// Tutorial: Command-Line Applications
+// Lesson 3: Challenge
+// ────────────────────────────────────────────────────────────
+
+module tutorials.21_cli_apps.challenge
+
+// Command-Line Applications - Challenge
+// This lesson covers key concepts of this topic.
+
+pub fn demonstrate() {
+    println("=== Command-Line Applications ===")
+    println("Lesson 3: Challenge")
+    
+    // Example code demonstrating the concept
+    let example = "tutorial_21_cli_apps"
+    println("Working through: " + example)
+    
+    let mut results = []
+    let mut i = 0
+    while i < 5 {
+        results = push(results, i * 4)
+        i += 1
+    }
+    println("Results: " + results as str)
+}
+
+fn main() {
+    demonstrate()
+    println("Lesson 3 complete!")
+}

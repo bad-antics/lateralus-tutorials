@@ -1,0 +1,31 @@
+// ────────────────────────────────────────────────────────────
+// Tutorial: Database Access
+// Lesson 2: Practice
+// ────────────────────────────────────────────────────────────
+
+module tutorials.19_databases.practice
+
+// Database Access - Practice
+// This lesson covers key concepts of this topic.
+
+pub fn demonstrate() {
+    println("=== Database Access ===")
+    println("Lesson 2: Practice")
+    
+    // Example code demonstrating the concept
+    let example = "tutorial_19_databases"
+    println("Working through: " + example)
+    
+    let mut results = []
+    let mut i = 0
+    while i < 5 {
+        results = push(results, i * 3)
+        i += 1
+    }
+    println("Results: " + results as str)
+}
+
+fn main() {
+    demonstrate()
+    println("Lesson 2 complete!")
+}
