@@ -1,0 +1,31 @@
+// 26_reactive/introduction.ltl — Reactive programming with streams
+// Run: lateralus run 26_reactive/introduction.ltl
+
+use std.reactive.{Subject, BehaviorSubject, Observable}
+
+fn main() {
+    // Subject — multicast event emitter
+    let clicks: Subject<string> = Subject.new()
+
+    clicks.subscribe(event => print("Handler A: ${event}"))
+    clicks.subscribe(event => print("Handler B: ${event.to_uppercase()}"))
+
+    clicks.emit("click")
+    clicks.emit("hover")
+
+    // BehaviorSubject — holds the latest value
+    let counter: BehaviorSubject<int> = BehaviorSubject.new(0)
+    counter.subscribe(n => print("Counter: ${n}"))
+    counter.next(1)
+    counter.next(2)
+    print("Current: ${counter.value()}")
+
+    // Observable pipeline
+    let doubled = Observable.range(1, 6)
+        |> map(x => x * 2)
+        |> filter(x => x > 4)
+
+    doubled.subscribe(x => print("doubled: ${x}"))
+}
+
+main()
