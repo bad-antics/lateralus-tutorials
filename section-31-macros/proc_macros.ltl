@@ -1,0 +1,63 @@
+// section-31 — Procedural macros: writing your own derive
+// This file demonstrates the API; actual proc macro runs at compile time
+
+// A proc macro receives the TokenStream of the annotated item
+// and returns a new TokenStream with generated code.
+
+// #[derive(Serialize)] — generates JSON serialisation
+#[proc_macro_derive(Serialize)]
+fn derive_serialize(input: TokenStream) -> TokenStream {
+    let ast = parse_derive_input(input)
+    let name = ast.ident
+    let fields = ast.fields_named()
+    let field_exprs = fields |> map(|f| {
+        ""${f.name}": self.${f.name}.serialize()"
+    }) |> join(", ")
+    quote! {
+        impl Serialize for #name {
+            fn serialize(self) -> JsonValue {
+                JsonValue.Object({ #field_exprs })
+            }
+        }
+    }
+}
+
+// #[instrument] — tracing span around function
+#[proc_macro_attribute]
+fn instrument(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_fn(item)
+    let name  = func.sig.ident.to_string()
+    quote! {
+        #func_with_body_wrapped_in {
+            let _span = tracing.span("${name}");
+            let _guard = _span.enter();
+            { #func.body }
+        }
+    }
+}
+
+// Example usage of the generated derives
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct User {
+    id:    int,
+    name:  string,
+    email: string,
+    role:  Role,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+enum Role { Admin, User, Moderator }
+
+#[instrument]
+fn get_user(id: int) -> User? {
+    // tracing span automatically created
+    User { id, name: "Alice", email: "alice@example.com", role: Role.Admin } |> some()
+}
+
+fn main() {
+    let user = get_user(1).unwrap()
+    let json = user.serialize()
+    print("Serialized: ${json.stringify()}")
+    assert(matches!(user.role, Role.Admin))
+    print("section 31 proc macros — ✓")
+}
