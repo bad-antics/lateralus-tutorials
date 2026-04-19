@@ -1,0 +1,97 @@
+// section-34 — Unsafe Lateralus: raw pointers and unsafe blocks
+
+// Safe abstraction over a raw pointer
+struct RawBuf<T> {
+    ptr: *mut T,
+    len: int,
+    cap: int,
+}
+
+impl<T> RawBuf<T> {
+    fn new(cap: int) -> RawBuf<T> {
+        let ptr = unsafe {
+            std.alloc.alloc(std.alloc.Layout.array::<T>(cap)) as *mut T
+        }
+        RawBuf { ptr, len: 0, cap }
+    }
+
+    fn push(mut self, val: T) {
+        assert(self.len < self.cap)
+        unsafe { self.ptr.add(self.len).write(val) }
+        self.len += 1
+    }
+
+    fn get(self, i: int) -> &T {
+        assert(i < self.len)
+        unsafe { &*self.ptr.add(i) }
+    }
+
+    fn get_mut(mut self, i: int) -> &mut T {
+        assert(i < self.len)
+        unsafe { &mut *self.ptr.add(i) }
+    }
+}
+
+impl<T> Drop for RawBuf<T> {
+    fn drop(mut self) {
+        unsafe { std.alloc.dealloc(self.ptr as *mut u8, std.alloc.Layout.array::<T>(self.cap)) }
+    }
+}
+
+// Transmute: reinterpret bit patterns
+fn f32_bits(f: f32) -> u32 { unsafe { std.mem.transmute::<f32, u32>(f) } }
+fn bits_f32(b: u32) -> f32 { unsafe { std.mem.transmute::<u32, f32>(b) } }
+
+// Fast inverse square root (Quake III trick)
+fn q_rsqrt(number: f32) -> f32 {
+    let x2     = number * 0.5
+    let mut i  = f32_bits(number)
+    i = 0x5f3759df - (i >> 1)
+    let mut y  = bits_f32(i)
+    y = y * (1.5 - (x2 * y * y))   // one Newton step
+    y
+}
+
+// Safe wrapper around a C library function (libc qsort)
+fn sort_ints(mut arr: [int]) -> [int] {
+    unsafe {
+        extern "C" { fn qsort(base: *mut std.ffi.c_void, nmemb: usize, size: usize, cmp: *const std.ffi.c_void) }
+        qsort(
+            arr.as_mut_ptr() as *mut std.ffi.c_void,
+            arr.len(),
+            std.mem.size_of::<int>(),
+            int_cmp as *const std.ffi.c_void,
+        )
+    }
+    arr
+}
+
+extern "C" fn int_cmp(a: *const std.ffi.c_void, b: *const std.ffi.c_void) -> int {
+    unsafe {
+        let x = *(a as *const int)
+        let y = *(b as *const int)
+        if x < y { -1 } else if x > y { 1 } else { 0 }
+    }
+}
+
+fn main() {
+    let mut buf: RawBuf<int> = RawBuf.new(8)
+    for i in range(0, 5) { buf.push(i * 10) }
+    assert(*buf.get(2) == 20)
+    *buf.get_mut(0) = 99
+    assert(*buf.get(0) == 99)
+    print("RawBuf ✓")
+
+    use std.math.sqrt
+    let x = 4.0f32
+    let approx = q_rsqrt(x)
+    let exact   = 1.0 / sqrt(x as float) as f32
+    assert((approx - exact).abs() < 0.001)
+    print("Q_rsqrt(4.0) ≈ ${approx:.4} (exact=${exact:.4}) ✓")
+
+    let sorted = sort_ints([5, 1, 4, 2, 3])
+    assert(sorted == [1, 2, 3, 4, 5])
+    print("qsort via FFI ✓")
+
+    print("section 34 unsafe — all passed ✓")
+}
