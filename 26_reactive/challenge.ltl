@@ -1,0 +1,62 @@
+// 26_reactive/challenge.ltl — Reactive event bus
+// Run: lateralus run 26_reactive/challenge.ltl
+
+use std.reactive.{Subject, Observable}
+
+// Challenge: Build a typed event bus
+// - Events can be Clicked(string), Hovered(string), KeyPressed(char)
+// - Components subscribe to specific event types
+// - emit() distributes to matching subscribers
+
+enum UIEvent {
+    Clicked(string),
+    Hovered(string),
+    KeyPressed(char),
+}
+
+struct EventBus {
+    subject: Subject<UIEvent>,
+}
+
+impl EventBus {
+    fn new() -> EventBus {
+        EventBus { subject: Subject.new() }
+    }
+
+    fn emit(self, event: UIEvent) {
+        self.subject.emit(event)
+    }
+
+    fn on_click(self, f: fn(string)) {
+        self.subject.as_observable()
+            |> filter_map(e => match e {
+                UIEvent.Clicked(target) => some(target),
+                _                       => none,
+            })
+            |> subscribe(f)
+    }
+
+    fn on_key(self, f: fn(char)) {
+        self.subject.as_observable()
+            |> filter_map(e => match e {
+                UIEvent.KeyPressed(k) => some(k),
+                _                     => none,
+            })
+            |> subscribe(f)
+    }
+}
+
+fn main() {
+    let bus = EventBus.new()
+
+    bus.on_click(target => print("Clicked: ${target}"))
+    bus.on_key(k => print("Key:     ${k}"))
+
+    bus.emit(UIEvent.Clicked("button#submit"))
+    bus.emit(UIEvent.KeyPressed('a'))
+    bus.emit(UIEvent.Hovered("nav"))
+    bus.emit(UIEvent.KeyPressed('b'))
+    bus.emit(UIEvent.Clicked("link#home"))
+}
+
+main()
