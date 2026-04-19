@@ -1,37 +1,29 @@
 # lateralus-tutorials
 
-Step-by-step Lateralus language tutorials
+Comprehensive tutorials for the [Lateralus](https://github.com/bad-antics/lateralus-lang) programming language — from beginner to expert.
 
-25 chapters × 3 lessons each covering the Lateralus language from basics to advanced topics.
+## Structure
 
-## File Count
+| Section | Topic |
+|---------|-------|
+| 1–5     | Basics: variables, types, functions, control flow, pattern matching |
+| 6–10    | Collections, closures, iterators, error handling, generics |
+| 11–15   | Traits, lifetimes, modules, async/await, FFI |
+| 16–20   | Advanced: smart pointers, concurrency, macros (intro), WASM, benchmarks |
+| 21–25   | Systems: allocators, networking, parsers, data structures, databases |
+| 26–30   | Expert: compiler plugins, custom allocators, kernel modules, distributed systems |
+| **31–35** | **Deep dives: macros, type system, error handling, unsafe, HKT generics** |
+| **36–40** | **Production: async streams, build system, design patterns, property tests, deployment** |
 
-**75** `.ltl` files.
+## File count: **101 `.ltl` files**
 
-## Language
+## Usage
 
-All code is written in [Lateralus](https://github.com/bad-antics/lateralus-lang), a systems programming language with modern syntax.
+```bash
+ltl run section-01-basics/hello.ltl
+ltl run section-31-macros/intro.ltl
+```
 
----
+## Contributing
 
-## Part of the Lateralus Ecosystem
-
-Lateralus is a pipeline-driven programming language. Explore the full ecosystem:
-
-- **[lateralus-lang](https://github.com/bad-antics/lateralus-lang)** — Compiler, VM, stdlib, REPL
-- **[Website](https://bad-antics.github.io/lateralus/)** — Landing page with code samples and feature comparison
-- **[Tutorials](https://github.com/bad-antics/lateralus-tutorials)** — 25 chapters from basics to web servers
-- **[Rosetta Code](https://github.com/bad-antics/lateralus-rosetta)** — 220 solutions
-- **[Cookbook](https://github.com/bad-antics/lateralus-cookbook)** — Practical recipes
-- **[VS Code Extension](https://github.com/bad-antics/lateralus-grammar)** — Syntax highlighting and snippets
-
-## License
-
-[MIT](LICENSE)
-
-### New Sections
-- 26: Reactive Programming
-- 27: Metaprogramming
-- 28: DSLs
-- 29: Algorithms
-- 30: Capstone Projects
+See [lateralus-lang](https://github.com/bad-antics/lateralus-lang) for language reference.
