@@ -1,0 +1,43 @@
+// 27_metaprogramming/introduction.ltl — Compile-time reflection
+// Run: lateralus run 27_metaprogramming/introduction.ltl
+
+use std.meta.{type_name, field_names, field_values}
+
+#[derive(Debug, Reflect)]
+struct Config {
+    host:    string,
+    port:    int,
+    debug:   bool,
+    timeout: int,
+}
+
+fn print_struct<T: Reflect>(v: T) {
+    print("${type_name<T>()}:")
+    for name in field_names<T>() {
+        let value = field_values(v).get(name)
+        print("  ${name}: ${value}")
+    }
+}
+
+fn from_env<T: Reflect + Default>() -> T {
+    mut obj = T.default()
+    for name in field_names<T>() {
+        let env_key = name.to_uppercase()
+        if let some(val) = env.get(env_key) {
+            obj.set_field(name, val)
+        }
+    }
+    obj
+}
+
+fn main() {
+    let cfg = Config {
+        host:    "localhost",
+        port:    8080,
+        debug:   true,
+        timeout: 30,
+    }
+    print_struct(cfg)
+}
+
+main()
