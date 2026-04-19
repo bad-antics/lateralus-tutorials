@@ -28,3 +28,10 @@ Lateralus is a pipeline-driven programming language. Explore the full ecosystem:
 ## License
 
 [MIT](LICENSE)
+
+### New Sections
+- 26: Reactive Programming
+- 27: Metaprogramming
+- 28: DSLs
+- 29: Algorithms
+- 30: Capstone Projects
