@@ -1,0 +1,62 @@
+// 30_projects/challenge.ltl — IRC-style chat server
+// Run: lateralus run 30_projects/challenge.ltl
+
+use std.net.TcpListener
+use std.sync.{Arc, Mutex}
+use std.io.{BufReader, BufWriter}
+use std.thread
+
+struct Client {
+    id:     int,
+    nick:   string,
+    writer: BufWriter,
+}
+
+type Clients = Arc<Mutex<[Client]>>
+
+fn broadcast(clients: Clients, sender_id: int, msg: string) {
+    let mut locked = clients.lock()
+    for client in locked.iter_mut() {
+        if client.id != sender_id {
+            client.writer.writeln(msg)
+        }
+    }
+}
+
+fn handle_client(stream: TcpStream, id: int, clients: Clients) {
+    let reader = BufReader.new(stream.clone())
+    let writer = BufWriter.new(stream)
+
+    writer.writeln("Enter nick: ")
+    let nick = reader.read_line().trim().to_string()
+
+    clients.lock().push(Client { id, nick: nick.clone(), writer })
+    broadcast(clients.clone(), id, "*** ${nick} joined ***")
+
+    for line in reader.lines() {
+        let msg = line.trim()
+        if msg == "/quit" { break }
+        broadcast(clients.clone(), id, "<${nick}> ${msg}")
+    }
+
+    clients.lock().retain(c => c.id != id)
+    broadcast(clients.clone(), id, "*** ${nick} left ***")
+}
+
+fn main() {
+    let clients: Clients = Arc.new(Mutex.new([]))
+    let listener = TcpListener.bind("0.0.0.0:6667")
+    mut next_id = 0
+
+    print("Chat server on port 6667")
+    print("Connect with: telnet localhost 6667")
+
+    for stream in listener.incoming() {
+        let id = next_id
+        next_id += 1
+        let c = clients.clone()
+        thread.spawn(|| handle_client(stream, id, c))
+    }
+}
+
+main()
