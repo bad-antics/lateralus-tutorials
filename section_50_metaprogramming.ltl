@@ -1,0 +1,254 @@
+// Tutorial 50 — Metaprogramming & Macros
+// Declarative macros, procedural macros, compile-time code generation.
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Part 1: Declarative Macros (macro_rules!)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Simple assert with message
+macro_rules! assert_eq {
+    ($left:expr, $right:expr) => {
+        let l = $left; let r = $right
+        if l != r { panic("assertion failed: ${l:?} != ${r:?}") }
+    }
+    ($left:expr, $right:expr, $msg:expr) => {
+        let l = $left; let r = $right
+        if l != r { panic("${$msg}: ${l:?} != ${r:?}") }
+    }
+}
+
+// vec! macro
+macro_rules! vec {
+    () => { Vec.new() }
+    ($($x:expr),+ $(,)?) => {
+        {
+            let mut v = Vec.new()
+            $(v.push($x);)+
+            v
+        }
+    }
+    ($val:expr; $count:expr) => { vec![$val].repeat($count) }
+}
+
+// hashmap! macro
+macro_rules! hashmap {
+    ($($key:expr => $value:expr),* $(,)?) => {
+        {
+            let mut map = HashMap.new()
+            $(map.insert($key, $value);)*
+            map
+        }
+    }
+}
+
+// dbg! macro for debugging
+macro_rules! dbg {
+    ($val:expr) => {
+        let result = $val
+        eprintln!("[${file!()}:${line!()}] ${stringify!($val)} = ${result:?}")
+        result
+    }
+}
+
+// matches! macro
+macro_rules! matches {
+    ($expr:expr, $($pattern:pat)|+ $(if $guard:expr)?) => {
+        match $expr { $($pattern)|+ $(if $guard)? => true, _ => false }
+    }
+}
+
+// ── Derive-style macro ──────────────────────────────────────────────────────
+// Generates Display implementation
+macro_rules! derive_display {
+    ($name:ident { $($field:ident : $ty:ty),* }) => {
+        impl std.fmt.Display for $name {
+            fn fmt(self, f: &mut std.fmt.Formatter) -> std.fmt.Result {
+                write!(f, "${stringify!($name)} {{ ")?
+                $(write!(f, "${stringify!($field)}: {:?}, ", self.$field)?;)*
+                write!(f, "}}")
+            }
+        }
+    }
+}
+
+// ── Builder pattern macro ────────────────────────────────────────────────────
+macro_rules! builder {
+    ($name:ident { $($field:ident : $ty:ty = $default:expr),* $(,)? }) => {
+        struct ${name}Builder {
+            $($field: $ty,)*
+        }
+
+        impl ${name}Builder {
+            fn new() -> ${name}Builder {
+                ${name}Builder { $($field: $default,)* }
+            }
+            $(
+                fn $field(mut self, val: $ty) -> ${name}Builder {
+                    self.$field = val; self
+                }
+            )*
+            fn build(self) -> $name {
+                $name { $($field: self.$field,)* }
+            }
+        }
+
+        impl $name {
+            fn builder() -> ${name}Builder { ${name}Builder.new() }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Part 2: Procedural-style macros (compile-time functions)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Token stream representation
+enum TokenTree {
+    Ident(string),
+    Literal(string),
+    Punct(char),
+    Group { delimiter: char, tokens: [TokenTree] },
+}
+
+struct TokenStream { tokens: [TokenTree] }
+
+impl TokenStream {
+    fn new() -> TokenStream { TokenStream { tokens: [] } }
+    fn push(mut self, tt: TokenTree) { self.tokens.push(tt) }
+    fn len(self) -> usize { self.tokens.len() }
+
+    fn to_string(self) -> string {
+        self.tokens.iter().map(|tt| match tt {
+            TokenTree.Ident(s) => s.clone(),
+            TokenTree.Literal(s) => s.clone(),
+            TokenTree.Punct(c) => c.to_string(),
+            TokenTree.Group { delimiter, tokens } => {
+                let inner = TokenStream { tokens: tokens.clone() }.to_string()
+                format!("{delimiter}${inner}${match delimiter { '(' => ')', '[' => ']', '{' => '}', _ => delimiter }}")
+            }
+        }).collect::<[string]>().join(" ")
+    }
+}
+
+// ── Compile-time enum variant count ──────────────────────────────────────────
+macro_rules! count_variants {
+    (enum $name:ident { $($variant:ident),* $(,)? }) => {
+        impl $name {
+            const VARIANT_COUNT: usize = 0 $(+ { let _ = stringify!($variant); 1 })*;
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Part 3: Attribute-like macros
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// #[test] — mark function as test
+// #[bench] — mark function as benchmark
+// #[derive(Debug, Clone, PartialEq)] — auto-derive traits
+// #[inline(always)] — force inlining
+// #[cfg(target_os = "lateralus")] — conditional compilation
+
+// Simulated derive
+struct Point { x: f64, y: f64 }
+
+// Manual "derive Debug"
+impl std.fmt.Debug for Point {
+    fn fmt(self, f: &mut std.fmt.Formatter) -> std.fmt.Result {
+        write!(f, "Point {{ x: {:?}, y: {:?} }}", self.x, self.y)
+    }
+}
+
+impl Clone for Point {
+    fn clone(self) -> Point { Point { x: self.x, y: self.y } }
+}
+
+impl PartialEq for Point {
+    fn eq(self, other: &Point) -> bool { self.x == other.x && self.y == other.y }
+}
+
+// ── Builder example ──────────────────────────────────────────────────────────
+struct Config {
+    host: string,
+    port: u16,
+    threads: usize,
+    debug: bool,
+}
+
+builder!(Config {
+    host: string = "localhost".to_string(),
+    port: u16 = 8080,
+    threads: usize = 4,
+    debug: bool = false,
+})
+
+// ── Enum with count ──────────────────────────────────────────────────────────
+enum Color { Red, Green, Blue, Yellow, Cyan, Magenta }
+count_variants!(enum Color { Red, Green, Blue, Yellow, Cyan, Magenta })
+
+fn main() {
+    // vec! macro
+    let v = vec![1, 2, 3]
+    assert_eq!(v.len(), 3)
+    assert_eq!(v[0], 1)
+    print("vec! macro ✓")
+
+    let v2: [i32] = vec![]
+    assert_eq!(v2.len(), 0)
+    print("vec![] empty ✓")
+
+    // hashmap! macro
+    let m = hashmap!{
+        "one" => 1,
+        "two" => 2,
+        "three" => 3,
+    }
+    assert_eq!(m.len(), 3)
+    assert_eq!(*m.get("two").unwrap(), 2)
+    print("hashmap! macro ✓")
+
+    // matches! macro
+    let opt: Option<i32> = some(42)
+    assert(matches!(opt, some(42)))
+    assert(!matches!(opt, none))
+    assert(matches!(opt, some(x) if x > 0))
+    print("matches! macro ✓")
+
+    // Builder pattern
+    let config = Config.builder()
+        .host("example.com".to_string())
+        .port(9090)
+        .threads(8)
+        .debug(true)
+        .build()
+    assert_eq!(config.host, "example.com")
+    assert_eq!(config.port, 9090)
+    assert_eq!(config.threads, 8)
+    assert(config.debug)
+    print("Builder macro ✓")
+
+    // Default builder
+    let default_config = Config.builder().build()
+    assert_eq!(default_config.port, 8080)
+    print("Default builder ✓")
+
+    // Variant count
+    assert_eq!(Color.VARIANT_COUNT, 6)
+    print("Variant count: ${Color.VARIANT_COUNT} ✓")
+
+    // TokenStream
+    let mut ts = TokenStream.new()
+    ts.push(TokenTree.Ident("fn".to_string()))
+    ts.push(TokenTree.Ident("hello".to_string()))
+    ts.push(TokenTree.Group { delimiter: '(', tokens: [] })
+    assert(ts.len() == 3)
+    print("TokenStream: '${ts.to_string()}' ✓")
+
+    // Point derive
+    let p1 = Point { x: 1.0, y: 2.0 }
+    let p2 = p1.clone()
+    assert(p1 == p2)
+    print("Point derive (Debug, Clone, PartialEq) ✓")
+
+    print("Tutorial 50 — Metaprogramming complete ✓")
+}
