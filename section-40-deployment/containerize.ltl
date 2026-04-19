@@ -1,0 +1,139 @@
+// section-40 — Packaging and deployment of Lateralus applications
+use std.fs.{write, create_dir_all}
+use std.process.Command
+
+// ── Dockerfile generator ──────────────────────────────────────────────────────
+struct DockerImage {
+    base:        string,
+    workdir:     string,
+    copy:        [(string, string)],   // (src, dst)
+    run:         [string],
+    env:         dict<string, string>,
+    expose:      [int],
+    cmd:         [string],
+    healthcheck: string?,
+    user:        string?,
+    labels:      dict<string, string>,
+}
+
+impl DockerImage {
+    fn lateralus_app(binary: string, port: int) -> DockerImage {
+        DockerImage {
+            base:    "debian:bookworm-slim",
+            workdir: "/app",
+            copy:    [("${binary}", "/app/${binary}"), (".env.example", "/app/.env")],
+            run:     ["apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*"],
+            env:     {"LTL_ENV": "production", "PORT": port.to_string()},
+            expose:  [port],
+            cmd:     ["/app/${binary}"],
+            healthcheck: some("CMD curl -f http://localhost:${port}/health || exit 1"),
+            user:    some("1000:1000"),
+            labels:  {"org.opencontainers.image.source": "https://github.com/bad-antics/lateralus-quickstart"},
+        }
+    }
+
+    fn to_dockerfile(self) -> string {
+        let mut lines = ["FROM ${self.base}", "WORKDIR ${self.workdir}"]
+        for (k, v) in self.env  { lines.push("ENV ${k}=${v}") }
+        for r in self.run        { lines.push("RUN ${r}") }
+        for (s, d) in self.copy  { lines.push("COPY ${s} ${d}") }
+        for p in self.expose     { lines.push("EXPOSE ${p}") }
+        if let some(u) = self.user           { lines.push("USER ${u}") }
+        if let some(hc) = self.healthcheck   { lines.push("HEALTHCHECK --interval=30s --timeout=3s ${hc}") }
+        for (k, v) in self.labels { lines.push("LABEL ${k}="${v}"") }
+        lines.push("CMD [${self.cmd |> map(|c| json.quote(c)) |> join(", ")}]")
+        lines |> join("
+")
+    }
+}
+
+// ── Multi-stage build for smaller images ──────────────────────────────────────
+fn multistage_dockerfile(app_name: string) -> string {
+    "# Build stage
+FROM lateralus/sdk:latest AS builder
+WORKDIR /build
+COPY . .
+RUN ltl build --release --target x86_64-unknown-linux-musl -o dist/${app_name}
+
+# Runtime stage (scratch = no OS at all)
+FROM scratch
+COPY --from=builder /build/dist/${app_name} /${app_name}
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+EXPOSE 8080
+ENTRYPOINT ["/${app_name}"]"
+}
+
+// ── Kubernetes manifests ───────────────────────────────────────────────────────
+fn k8s_deployment(app: string, image: string, replicas: int, port: int) -> string {
+    "apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${app}
+  labels:
+    app: ${app}
+spec:
+  replicas: ${replicas}
+  selector:
+    matchLabels:
+      app: ${app}
+  template:
+    metadata:
+      labels:
+        app: ${app}
+    spec:
+      containers:
+      - name: ${app}
+        image: ${image}
+        ports:
+        - containerPort: ${port}
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: ${port}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: ${port}
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${app}-svc
+spec:
+  selector:
+    app: ${app}
+  ports:
+  - port: 80
+    targetPort: ${port}
+  type: ClusterIP"
+}
+
+fn main() {
+    let img    = DockerImage.lateralus_app("my-app", 8080)
+    let docker = img.to_dockerfile()
+    write("/tmp/Dockerfile", docker)
+    print("Generated Dockerfile:")
+    print(docker)
+    print("")
+
+    let ms = multistage_dockerfile("api-server")
+    write("/tmp/Dockerfile.multistage", ms)
+    print("Generated multi-stage Dockerfile → /tmp/Dockerfile.multistage ✓")
+
+    let k8s = k8s_deployment("my-app", "ghcr.io/example/my-app:latest", 3, 8080)
+    write("/tmp/k8s-deployment.yaml", k8s)
+    print("Generated Kubernetes deployment → /tmp/k8s-deployment.yaml ✓")
+
+    print("section 40 deployment — ✓")
+}
