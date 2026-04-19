@@ -1,0 +1,48 @@
+// 28_dsl/introduction.ltl — Embedded DSLs in Lateralus
+// Run: lateralus run 28_dsl/introduction.ltl
+
+// Lateralus pipelines and closures make DSLs natural.
+// This example shows an HTML builder DSL.
+
+fn html(children: fn() -> [string]) -> string {
+    "<html>
+${children().join("
+")}
+</html>"
+}
+
+fn head(title: string) -> string {
+    "<head><title>${title}</title></head>"
+}
+
+fn body(children: fn() -> [string]) -> string {
+    "<body>
+${children().join("
+")}
+</body>"
+}
+
+fn h1(text: string)  -> string { "<h1>${text}</h1>" }
+fn p(text: string)   -> string { "<p>${text}</p>" }
+fn ul(items: [string]) -> string {
+    let lis = items |> map(i => "  <li>${i}</li>") |> join("
+")
+    "<ul>
+${lis}
+</ul>"
+}
+
+fn main() {
+    let page = html(|| [
+        head("My Page"),
+        body(|| [
+            h1("Welcome to Lateralus"),
+            p("A pipeline-native programming language."),
+            ul(["Fast", "Safe", "Expressive"]),
+        ]),
+    ])
+
+    print(page)
+}
+
+main()
