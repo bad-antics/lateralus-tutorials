@@ -1,0 +1,79 @@
+// 29_algorithms/challenge.ltl — A* pathfinding
+// Run: lateralus run 29_algorithms/challenge.ltl
+
+use std.collections.BinaryHeap
+
+struct Point { x: int, y: int }
+
+impl Point {
+    fn manhattan(self, other: Point) -> int {
+        (self.x - other.x).abs() + (self.y - other.y).abs()
+    }
+
+    fn neighbors(self, grid: [[int]]) -> [Point] {
+        let rows = grid.len()
+        let cols = grid[0].len()
+        [(0,1),(0,-1),(1,0),(-1,0)]
+            |> filter_map(|(dr, dc)| {
+                let nr = self.x + dr
+                let nc = self.y + dc
+                if nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc] != 1 {
+                    some(Point { x: nr, y: nc })
+                } else { none }
+            })
+            |> collect()
+    }
+}
+
+fn astar(grid: [[int]], start: Point, goal: Point) -> [Point]? {
+    mut heap: BinaryHeap<(int, Point)> = BinaryHeap.min()
+    mut g_score: dict<(int,int), int> = { (start.x, start.y): 0 }
+    mut came_from: dict<(int,int), Point> = {}
+
+    heap.push((start.manhattan(goal), start))
+
+    while !heap.is_empty() {
+        let (_, current) = heap.pop()
+        if current.x == goal.x && current.y == goal.y {
+            mut path = [goal]
+            mut c = goal
+            while let some(prev) = came_from.get((c.x, c.y)) {
+                path.push(prev)
+                c = prev
+            }
+            return some(path |> reverse() |> collect())
+        }
+        let g = g_score.get((current.x, current.y)) ?? int.MAX
+        for nbr in current.neighbors(grid) {
+            let ng = g + 1
+            let key = (nbr.x, nbr.y)
+            if ng < g_score.get(key) ?? int.MAX {
+                g_score[key] = ng
+                came_from[key] = current
+                heap.push((ng + nbr.manhattan(goal), nbr))
+            }
+        }
+    }
+    none
+}
+
+fn main() {
+    let grid = [
+        [0, 0, 0, 0, 0],
+        [0, 1, 1, 1, 0],
+        [0, 0, 0, 1, 0],
+        [1, 1, 0, 1, 0],
+        [0, 0, 0, 0, 0],
+    ]
+
+    let path = astar(grid, Point { x: 0, y: 0 }, Point { x: 4, y: 4 })
+    match path {
+        none    => print("No path found"),
+        some(p) => {
+            print("Path length: ${p.len()}")
+            for step in p { print("  (${step.x}, ${step.y})") }
+        },
+    }
+}
+
+main()
