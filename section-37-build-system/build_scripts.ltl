@@ -1,0 +1,137 @@
+// section-37 — Build system and build scripts in Lateralus
+// Lateralus uses ltl.toml for project config and build.ltl for custom build steps
+
+// ── ltl.toml schema (as a struct) ────────────────────────────────────────────
+struct Package {
+    name:        string,
+    version:     string,
+    edition:     string,
+    authors:     [string],
+    description: string?,
+    license:     string?,
+    repository:  string?,
+}
+
+struct Dependency {
+    version:  string,
+    features: [string],
+    optional: bool,
+    path:     string?,
+    git:      string?,
+}
+
+struct Profile {
+    opt_level:  int,
+    debug:      bool,
+    lto:        bool,
+    strip:      bool,
+    panic:      string,
+}
+
+struct LtlToml {
+    package:      Package,
+    dependencies: dict<string, Dependency>,
+    dev_deps:     dict<string, Dependency>,
+    profiles:     dict<string, Profile>,
+    features:     dict<string, [string]>,
+    bin:          [(string, string)],    // (name, path)
+    lib:          (string, string)?,
+}
+
+// ── Build script API (build.ltl) ──────────────────────────────────────────────
+struct BuildContext {
+    out_dir:    string,
+    target:     string,
+    host:       string,
+    profile:    string,
+    features:   set<string>,
+    opt_level:  int,
+    num_jobs:   int,
+}
+
+impl BuildContext {
+    fn from_env() -> BuildContext {
+        BuildContext {
+            out_dir:   std.env.var("LTL_OUT_DIR") ?? "/tmp/ltl-out",
+            target:    std.env.var("TARGET") ?? "x86_64-unknown-linux-gnu",
+            host:      std.env.var("HOST")   ?? "x86_64-unknown-linux-gnu",
+            profile:   std.env.var("PROFILE") ?? "debug",
+            features:  std.env.var("CARGO_FEATURE_NAMES").map(|s| s.split(',').collect_set()) ?? set(),
+            opt_level: std.env.var("OPT_LEVEL").and_then(|v| v.parse_int().ok()) ?? 0,
+            num_jobs:  std.env.var("NUM_JOBS").and_then(|v| v.parse_int().ok()) ?? 4,
+        }
+    }
+
+    // Tell the compiler to re-run build.ltl if file changes
+    fn rerun_if_changed(self, path: string) {
+        print("cargo:rerun-if-changed=${path}")
+    }
+    fn rerun_if_env_changed(self, var: string) {
+        print("cargo:rerun-if-env-changed=${var}")
+    }
+
+    // Link flags
+    fn rustc_link_lib(self, kind: string, name: string) {
+        print("cargo:rustc-link-lib=${kind}=${name}")
+    }
+    fn rustc_link_search(self, kind: string, path: string) {
+        print("cargo:rustc-link-search=${kind}=${path}")
+    }
+    fn rustc_cfg(self, key: string, val: string?) {
+        match val {
+            none    => print("cargo:rustc-cfg=${key}"),
+            some(v) => print("cargo:rustc-cfg=${key}="${v}""),
+        }
+    }
+    fn rustc_env(self, key: string, val: string) {
+        print("cargo:rustc-env=${key}=${val}")
+    }
+}
+
+// Example build script: bind to a C library
+fn build_c_lib(ctx: BuildContext) {
+    ctx.rerun_if_changed("src/native/mylib.c")
+    ctx.rerun_if_changed("src/native/mylib.h")
+
+    // Compile C code
+    let status = std.process.Command.new("cc")
+        .args(["-c", "-O2", "-o",
+               "${ctx.out_dir}/mylib.o",
+               "src/native/mylib.c"])
+        .status()
+        .expect("cc not found")
+    assert(status.success(), "C compilation failed")
+
+    // Create static library
+    std.process.Command.new("ar")
+        .args(["rcs", "${ctx.out_dir}/libmylib.a", "${ctx.out_dir}/mylib.o"])
+        .status().expect("ar not found")
+
+    ctx.rustc_link_search("native", ctx.out_dir.clone())
+    ctx.rustc_link_lib("static", "mylib")
+}
+
+// Code generation: generate Lateralus bindings from a spec file
+fn codegen(ctx: BuildContext) {
+    let spec    = std.fs.read_to_string("src/spec.json").expect("spec.json not found")
+    let entries = std.json.parse(spec).expect("bad JSON")
+    let mut code = "// AUTO-GENERATED — do not edit
+"
+    for (name, val) in entries.as_object().unwrap() {
+        code += "pub const ${name}: int = ${val.as_int().unwrap()};
+"
+    }
+    std.fs.write("${ctx.out_dir}/generated.ltl", code)
+    ctx.rustc_env("GENERATED_FILE", "${ctx.out_dir}/generated.ltl")
+}
+
+fn main() {
+    let ctx = BuildContext.from_env()
+    print("Build context:")
+    print("  target:  ${ctx.target}")
+    print("  profile: ${ctx.profile}")
+    print("  out_dir: ${ctx.out_dir}")
+    print("  jobs:    ${ctx.num_jobs}")
+    // build_c_lib(ctx) // would run in a real build
+    print("section 37 build system — ✓")
+}
