@@ -1,0 +1,356 @@
+// Tutorial 44 — Building Interpreters
+// A tree-walking interpreter for a small expression language.
+
+use std.collections.HashMap
+
+// ── Tokens ───────────────────────────────────────────────────────────────────
+enum TokenKind {
+    Number(f64), Ident(string), StringLit(string), Bool(bool),
+    Plus, Minus, Star, Slash, Percent,
+    Eq, Ne, Lt, Le, Gt, Ge, And, Or, Not,
+    Assign, LParen, RParen, LBrace, RBrace, Comma, Semicolon, Arrow,
+    Let, If, Else, While, Fn, Return, Print,
+    Eof,
+}
+
+struct Token { kind: TokenKind, line: u32, col: u32 }
+
+// ── Lexer ────────────────────────────────────────────────────────────────────
+struct Lexer { source: [char], pos: usize, line: u32, col: u32 }
+
+impl Lexer {
+    fn new(source: &str) -> Lexer {
+        Lexer { source: source.chars().collect(), pos: 0, line: 1, col: 1 }
+    }
+
+    fn peek(self) -> Option<char> { self.source.get(self.pos).copied() }
+    fn advance(mut self) -> Option<char> {
+        let ch = self.source.get(self.pos).copied()?
+        self.pos += 1
+        if ch == '\n' { self.line += 1; self.col = 1 } else { self.col += 1 }
+        some(ch)
+    }
+
+    fn next_token(mut self) -> Token {
+        self.skip_whitespace()
+        let line = self.line; let col = self.col
+
+        match self.peek() {
+            none => Token { kind: TokenKind.Eof, line, col },
+            some(ch) => match ch {
+                '+' => { self.advance(); Token { kind: TokenKind.Plus, line, col } }
+                '-' => { self.advance();
+                    if self.peek() == some('>') { self.advance(); Token { kind: TokenKind.Arrow, line, col } }
+                    else { Token { kind: TokenKind.Minus, line, col } }
+                }
+                '*' => { self.advance(); Token { kind: TokenKind.Star, line, col } }
+                '/' => { self.advance(); Token { kind: TokenKind.Slash, line, col } }
+                '%' => { self.advance(); Token { kind: TokenKind.Percent, line, col } }
+                '(' => { self.advance(); Token { kind: TokenKind.LParen, line, col } }
+                ')' => { self.advance(); Token { kind: TokenKind.RParen, line, col } }
+                '{' => { self.advance(); Token { kind: TokenKind.LBrace, line, col } }
+                '}' => { self.advance(); Token { kind: TokenKind.RBrace, line, col } }
+                ',' => { self.advance(); Token { kind: TokenKind.Comma, line, col } }
+                ';' => { self.advance(); Token { kind: TokenKind.Semicolon, line, col } }
+                '=' => { self.advance();
+                    if self.peek() == some('=') { self.advance(); Token { kind: TokenKind.Eq, line, col } }
+                    else { Token { kind: TokenKind.Assign, line, col } }
+                }
+                '!' => { self.advance();
+                    if self.peek() == some('=') { self.advance(); Token { kind: TokenKind.Ne, line, col } }
+                    else { Token { kind: TokenKind.Not, line, col } }
+                }
+                '<' => { self.advance();
+                    if self.peek() == some('=') { self.advance(); Token { kind: TokenKind.Le, line, col } }
+                    else { Token { kind: TokenKind.Lt, line, col } }
+                }
+                '>' => { self.advance();
+                    if self.peek() == some('=') { self.advance(); Token { kind: TokenKind.Ge, line, col } }
+                    else { Token { kind: TokenKind.Gt, line, col } }
+                }
+                '"' => self.read_string(line, col),
+                c if c.is_digit(10) => self.read_number(line, col),
+                c if c.is_alphabetic() || c == '_' => self.read_ident(line, col),
+                _ => { self.advance(); self.next_token() }
+            }
+        }
+    }
+
+    fn read_number(mut self, line: u32, col: u32) -> Token {
+        let mut s = string.new()
+        while let some(c) = self.peek() {
+            if c.is_digit(10) || c == '.' { s.push(self.advance().unwrap()) }
+            else { break }
+        }
+        Token { kind: TokenKind.Number(s.parse::<f64>().unwrap()), line, col }
+    }
+
+    fn read_string(mut self, line: u32, col: u32) -> Token {
+        self.advance()  // skip opening "
+        let mut s = string.new()
+        while let some(c) = self.advance() {
+            if c == '"' { break }
+            if c == '\\' { if let some(e) = self.advance() { s.push(match e { 'n' => '\n', 't' => '\t', _ => e }) } }
+            else { s.push(c) }
+        }
+        Token { kind: TokenKind.StringLit(s), line, col }
+    }
+
+    fn read_ident(mut self, line: u32, col: u32) -> Token {
+        let mut s = string.new()
+        while let some(c) = self.peek() {
+            if c.is_alphanumeric() || c == '_' { s.push(self.advance().unwrap()) }
+            else { break }
+        }
+        let kind = match s.as_str() {
+            "let" => TokenKind.Let, "if" => TokenKind.If, "else" => TokenKind.Else,
+            "while" => TokenKind.While, "fn" => TokenKind.Fn, "return" => TokenKind.Return,
+            "print" => TokenKind.Print, "true" => TokenKind.Bool(true), "false" => TokenKind.Bool(false),
+            "and" => TokenKind.And, "or" => TokenKind.Or, "not" => TokenKind.Not,
+            _ => TokenKind.Ident(s),
+        }
+        Token { kind, line, col }
+    }
+
+    fn skip_whitespace(mut self) {
+        while let some(c) = self.peek() {
+            if c.is_whitespace() { self.advance(); }
+            else if c == '/' && self.source.get(self.pos + 1) == some(&'/') {
+                while self.peek() != some('\n') && self.peek().is_some() { self.advance(); }
+            }
+            else { break }
+        }
+    }
+}
+
+// ── AST ──────────────────────────────────────────────────────────────────────
+enum Expr {
+    Number(f64), Str(string), Bool(bool), Ident(string),
+    Binary { op: string, lhs: Box<Expr>, rhs: Box<Expr> },
+    Unary { op: string, operand: Box<Expr> },
+    Call { func: string, args: [Expr] },
+    If { cond: Box<Expr>, then_body: [Stmt], else_body: Option<[Stmt]> },
+}
+
+enum Stmt {
+    Let { name: string, init: Expr },
+    Assign { name: string, value: Expr },
+    While { cond: Expr, body: [Stmt] },
+    FnDef { name: string, params: [string], body: [Stmt] },
+    Return(Option<Expr>),
+    Print(Expr),
+    ExprStmt(Expr),
+}
+
+// ── Values ───────────────────────────────────────────────────────────────────
+enum Value {
+    Number(f64), Str(string), Bool(bool), Nil,
+    Function { params: [string], body: [Stmt], closure: Environment },
+}
+
+impl Value {
+    fn is_truthy(self) -> bool {
+        match self {
+            Value.Bool(b) => b, Value.Nil => false,
+            Value.Number(n) => n != 0.0, _ => true,
+        }
+    }
+
+    fn to_string(self) -> string {
+        match self {
+            Value.Number(n) => format!("{n}"),
+            Value.Str(s) => s, Value.Bool(b) => format!("{b}"),
+            Value.Nil => "nil".to_string(),
+            Value.Function { .. } => "<function>".to_string(),
+        }
+    }
+}
+
+// ── Environment ──────────────────────────────────────────────────────────────
+struct Environment {
+    scopes: [HashMap<string, Value>],
+}
+
+impl Environment {
+    fn new() -> Environment { Environment { scopes: [HashMap.new()] } }
+    fn push_scope(mut self) { self.scopes.push(HashMap.new()) }
+    fn pop_scope(mut self) { self.scopes.pop(); }
+
+    fn set(mut self, name: string, value: Value) {
+        self.scopes.last_mut().unwrap().insert(name, value)
+    }
+
+    fn get(self, name: &str) -> Option<Value> {
+        for scope in self.scopes.iter().rev() {
+            if let some(v) = scope.get(name) { return some(v.clone()) }
+        }
+        none
+    }
+
+    fn assign(mut self, name: &str, value: Value) -> bool {
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.contains_key(name) { scope.insert(name.to_string(), value); return true }
+        }
+        false
+    }
+}
+
+// ── Interpreter ──────────────────────────────────────────────────────────────
+struct Interpreter {
+    env: Environment,
+    output: [string],
+}
+
+enum InterpError { UndefinedVar(string), TypeError(string), Return(Value) }
+
+impl Interpreter {
+    fn new() -> Interpreter { Interpreter { env: Environment.new(), output: [] } }
+
+    fn eval_expr(mut self, expr: &Expr) -> Result<Value, InterpError> {
+        match expr {
+            Expr.Number(n) => ok(Value.Number(*n)),
+            Expr.Str(s) => ok(Value.Str(s.clone())),
+            Expr.Bool(b) => ok(Value.Bool(*b)),
+            Expr.Ident(name) => self.env.get(name).ok_or(InterpError.UndefinedVar(name.clone())),
+            Expr.Binary { op, lhs, rhs } => {
+                let l = self.eval_expr(lhs)?
+                let r = self.eval_expr(rhs)?
+                match (op.as_str(), l, r) {
+                    ("+", Value.Number(a), Value.Number(b)) => ok(Value.Number(a + b)),
+                    ("+", Value.Str(a), Value.Str(b)) => ok(Value.Str(a + &b)),
+                    ("-", Value.Number(a), Value.Number(b)) => ok(Value.Number(a - b)),
+                    ("*", Value.Number(a), Value.Number(b)) => ok(Value.Number(a * b)),
+                    ("/", Value.Number(a), Value.Number(b)) => ok(Value.Number(a / b)),
+                    ("%", Value.Number(a), Value.Number(b)) => ok(Value.Number(a % b)),
+                    ("==", a, b) => ok(Value.Bool(a == b)),
+                    ("!=", a, b) => ok(Value.Bool(a != b)),
+                    ("<", Value.Number(a), Value.Number(b)) => ok(Value.Bool(a < b)),
+                    ("<=", Value.Number(a), Value.Number(b)) => ok(Value.Bool(a <= b)),
+                    (">", Value.Number(a), Value.Number(b)) => ok(Value.Bool(a > b)),
+                    (">=", Value.Number(a), Value.Number(b)) => ok(Value.Bool(a >= b)),
+                    ("and", a, b) => ok(Value.Bool(a.is_truthy() && b.is_truthy())),
+                    ("or", a, b) => ok(Value.Bool(a.is_truthy() || b.is_truthy())),
+                    _ => err(InterpError.TypeError("invalid binary op".to_string())),
+                }
+            }
+            Expr.Call { func, args } => {
+                let callee = self.env.get(func).ok_or(InterpError.UndefinedVar(func.clone()))?
+                match callee {
+                    Value.Function { params, body, closure } => {
+                        let arg_vals: [Value] = args.iter().map(|a| self.eval_expr(a)).collect::<Result<_, _>>()?
+                        let saved_env = self.env.clone()
+                        self.env = closure
+                        self.env.push_scope()
+                        for (param, val) in params.iter().zip(arg_vals) { self.env.set(param.clone(), val) }
+                        let result = match self.exec_stmts(&body) {
+                            ok(()) => ok(Value.Nil),
+                            err(InterpError.Return(v)) => ok(v),
+                            err(e) => err(e),
+                        }
+                        self.env = saved_env
+                        result
+                    }
+                    _ => err(InterpError.TypeError("not callable".to_string())),
+                }
+            }
+            _ => ok(Value.Nil),
+        }
+    }
+
+    fn exec_stmt(mut self, stmt: &Stmt) -> Result<(), InterpError> {
+        match stmt {
+            Stmt.Let { name, init } => {
+                let val = self.eval_expr(init)?
+                self.env.set(name.clone(), val)
+                ok(())
+            }
+            Stmt.Assign { name, value } => {
+                let val = self.eval_expr(value)?
+                if !self.env.assign(name, val) { return err(InterpError.UndefinedVar(name.clone())) }
+                ok(())
+            }
+            Stmt.Print(expr) => {
+                let val = self.eval_expr(expr)?
+                self.output.push(val.to_string())
+                ok(())
+            }
+            Stmt.While { cond, body } => {
+                while self.eval_expr(cond)?.is_truthy() { self.exec_stmts(body)? }
+                ok(())
+            }
+            Stmt.FnDef { name, params, body } => {
+                let func = Value.Function { params: params.clone(), body: body.clone(), closure: self.env.clone() }
+                self.env.set(name.clone(), func)
+                ok(())
+            }
+            Stmt.Return(expr) => {
+                let val = match expr { some(e) => self.eval_expr(e)?, none => Value.Nil }
+                err(InterpError.Return(val))
+            }
+            Stmt.ExprStmt(e) => { self.eval_expr(e)?; ok(()) }
+        }
+    }
+
+    fn exec_stmts(mut self, stmts: &[Stmt]) -> Result<(), InterpError> {
+        for stmt in stmts { self.exec_stmt(stmt)? }
+        ok(())
+    }
+}
+
+fn main() {
+    // Lexer test
+    let mut lexer = Lexer.new("let x = 42 + 3.14;")
+    let t1 = lexer.next_token(); assert(matches!(t1.kind, TokenKind.Let))
+    let t2 = lexer.next_token(); assert(matches!(t2.kind, TokenKind.Ident(_)))
+    let t3 = lexer.next_token(); assert(matches!(t3.kind, TokenKind.Assign))
+    let t4 = lexer.next_token(); assert(matches!(t4.kind, TokenKind.Number(42.0)))
+    print("Lexer ✓")
+
+    // Interpreter test
+    let mut interp = Interpreter.new()
+
+    interp.exec_stmt(&Stmt.Let { name: "x".to_string(), init: Expr.Number(10.0) }).unwrap()
+    interp.exec_stmt(&Stmt.Let { name: "y".to_string(), init: Expr.Number(20.0) }).unwrap()
+
+    let sum = interp.eval_expr(&Expr.Binary {
+        op: "+".to_string(),
+        lhs: Box.new(Expr.Ident("x".to_string())),
+        rhs: Box.new(Expr.Ident("y".to_string())),
+    }).unwrap()
+    assert(matches!(sum, Value.Number(30.0)))
+    print("x + y = 30 ✓")
+
+    // String concatenation
+    let result = interp.eval_expr(&Expr.Binary {
+        op: "+".to_string(),
+        lhs: Box.new(Expr.Str("Hello, ".to_string())),
+        rhs: Box.new(Expr.Str("world!".to_string())),
+    }).unwrap()
+    assert(result == Value.Str("Hello, world!".to_string()))
+    print("String concat ✓")
+
+    // Function
+    interp.exec_stmt(&Stmt.FnDef {
+        name: "double".to_string(),
+        params: ["n".to_string()],
+        body: [Stmt.Return(some(Expr.Binary {
+            op: "*".to_string(),
+            lhs: Box.new(Expr.Ident("n".to_string())),
+            rhs: Box.new(Expr.Number(2.0)),
+        }))],
+    }).unwrap()
+
+    let result = interp.eval_expr(&Expr.Call {
+        func: "double".to_string(),
+        args: [Expr.Number(21.0)],
+    }).unwrap()
+    assert(matches!(result, Value.Number(42.0)))
+    print("double(21) = 42 ✓")
+
+    // Environment scoping
+    let env_test = interp.env.get("x")
+    assert(env_test == some(Value.Number(10.0)))
+    print("Environment scoping ✓")
+
+    print("Tutorial 44 — Building Interpreters complete ✓")
+}
