@@ -1,0 +1,87 @@
+// section-36 — Advanced async: Streams, Select, structured concurrency
+
+use std.async.{stream, Stream, StreamExt}
+use std.sync.{channel, mpsc}
+use std.task.{spawn, JoinHandle, join_all, select}
+use std.time.{sleep_ms, Instant}
+
+// ── Async streams ─────────────────────────────────────────────────────────────
+async fn fibonacci_stream() -> impl Stream<Item = int> {
+    stream! {
+        let (mut a, mut b) = (0, 1)
+        loop {
+            yield a
+            (a, b) = (b, a + b)
+        }
+    }
+}
+
+async fn demo_streams() {
+    let fibs: [int] = fibonacci_stream().await
+        |> take(10)
+        |> collect_async().await
+    assert(fibs == [0,1,1,2,3,5,8,13,21,34])
+    print("  fibonacci stream ✓")
+
+    // Stream combinators
+    let evens: [int] = fibonacci_stream().await
+        |> filter_async(|n| async { n % 2 == 0 })
+        |> take(5)
+        |> collect_async().await
+    assert(evens == [0,2,8,34,144])
+    print("  even fibonacci stream ✓")
+}
+
+// ── Structured concurrency with nursery ───────────────────────────────────────
+async fn demo_nursery() {
+    let results = nursery! {
+        let a = spawn(async { sleep_ms(10).await; 1 })
+        let b = spawn(async { sleep_ms(5).await;  2 })
+        let c = spawn(async { sleep_ms(15).await; 3 })
+        (a.await, b.await, c.await)
+    }
+    assert(results == (1, 2, 3))
+    print("  nursery structured concurrency ✓")
+}
+
+// ── Select on multiple futures ─────────────────────────────────────────────────
+async fn demo_select() {
+    let (tx1, rx1) = channel::<string>()
+    let (tx2, rx2) = channel::<string>()
+
+    spawn(async { sleep_ms(20).await; tx1.send("slow".to_string()).await.unwrap() })
+    spawn(async { sleep_ms(5).await;  tx2.send("fast".to_string()).await.unwrap() })
+
+    let winner = select! {
+        msg = rx1.recv() => msg.unwrap(),
+        msg = rx2.recv() => msg.unwrap(),
+    }
+    assert(winner == "fast")
+    print("  select! winner = ${winner} ✓")
+}
+
+// ── Timeout wrapper ────────────────────────────────────────────────────────────
+async fn with_timeout<T>(fut: impl Future<Output=T>, ms: int) -> Result<T, string> {
+    select! {
+        v = fut                              => ok(v),
+        _ = sleep_ms(ms)                     => err("timeout after ${ms}ms"),
+    }
+}
+
+async fn demo_timeout() {
+    let fast = with_timeout(async { sleep_ms(5).await; 42 }, 100).await
+    assert(fast == ok(42))
+    print("  fast future within timeout ✓")
+
+    let slow = with_timeout(async { sleep_ms(200).await; 99 }, 50).await
+    assert(slow.is_err())
+    print("  slow future timed out ✓")
+}
+
+async fn main() {
+    demo_streams().await
+    demo_nursery().await
+    demo_select().await
+    demo_timeout().await
+    print("section 36 advanced async — all passed ✓")
+}
