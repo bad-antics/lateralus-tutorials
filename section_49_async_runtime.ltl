@@ -1,0 +1,270 @@
+// Tutorial 49 — Building an Async Runtime
+// Futures, wakers, an event loop, and a task scheduler.
+
+use std.collections.{HashMap, VecDeque}
+use std.sync.{Arc, Mutex}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Core Async Primitives
+// ═══════════════════════════════════════════════════════════════════════════════
+
+enum Poll<T> { Ready(T), Pending }
+
+trait Future {
+    type Output
+    fn poll(mut self, cx: &mut Context) -> Poll<Self.Output>
+}
+
+type TaskId = u64
+
+struct Waker {
+    task_id: TaskId,
+    wake_queue: Arc<Mutex<VecDeque<TaskId>>>,
+}
+
+impl Waker {
+    fn wake(self) {
+        let mut queue = self.wake_queue.lock().unwrap()
+        if !queue.contains(&self.task_id) { queue.push_back(self.task_id) }
+    }
+
+    fn clone(self) -> Waker {
+        Waker { task_id: self.task_id, wake_queue: self.wake_queue.clone() }
+    }
+}
+
+struct Context { waker: Waker }
+
+impl Context {
+    fn waker(self) -> &Waker { &self.waker }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Task and Executor
+// ═══════════════════════════════════════════════════════════════════════════════
+
+struct Task {
+    id: TaskId,
+    future: Box<dyn Future<Output = ()>>,
+    completed: bool,
+}
+
+struct Executor {
+    tasks: HashMap<TaskId, Task>,
+    ready_queue: Arc<Mutex<VecDeque<TaskId>>>,
+    next_id: TaskId,
+}
+
+impl Executor {
+    fn new() -> Executor {
+        Executor {
+            tasks: HashMap.new(),
+            ready_queue: Arc.new(Mutex.new(VecDeque.new())),
+            next_id: 1,
+        }
+    }
+
+    fn spawn<F: Future<Output = ()> + 'static>(mut self, future: F) -> TaskId {
+        let id = self.next_id
+        self.next_id += 1
+        self.tasks.insert(id, Task { id, future: Box.new(future), completed: false })
+        self.ready_queue.lock().unwrap().push_back(id)
+        id
+    }
+
+    fn run(mut self) {
+        loop {
+            let task_id = {
+                let mut queue = self.ready_queue.lock().unwrap()
+                queue.pop_front()
+            }
+
+            match task_id {
+                some(id) => {
+                    if let some(task) = self.tasks.get_mut(&id) {
+                        if task.completed { continue }
+
+                        let waker = Waker {
+                            task_id: id,
+                            wake_queue: self.ready_queue.clone(),
+                        }
+                        let mut cx = Context { waker }
+
+                        match task.future.poll(&mut cx) {
+                            Poll.Ready(()) => { task.completed = true }
+                            Poll.Pending => {}  // will be re-queued via waker
+                        }
+                    }
+                }
+                none => {
+                    // Check if all tasks done
+                    if self.tasks.values().all(|t| t.completed) { break }
+                    // In a real runtime, we'd park the thread here
+                    std.thread.yield_now()
+                }
+            }
+        }
+    }
+
+    fn task_count(self) -> usize { self.tasks.len() }
+    fn completed_count(self) -> usize { self.tasks.values().filter(|t| t.completed).count() }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Combinators
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Ready future — immediately resolves
+struct Ready<T> { value: Option<T> }
+
+impl<T> Future for Ready<T> {
+    type Output = T
+    fn poll(mut self, _cx: &mut Context) -> Poll<T> {
+        Poll.Ready(self.value.take().unwrap())
+    }
+}
+
+fn ready<T>(value: T) -> Ready<T> { Ready { value: some(value) } }
+
+// Yield future — yields once, then completes
+struct YieldNow { yielded: bool }
+
+impl Future for YieldNow {
+    type Output = ()
+    fn poll(mut self, cx: &mut Context) -> Poll<()> {
+        if self.yielded { Poll.Ready(()) }
+        else { self.yielded = true; cx.waker().wake(); Poll.Pending }
+    }
+}
+
+fn yield_now() -> YieldNow { YieldNow { yielded: false } }
+
+// Map future
+struct Map<F: Future, Func> {
+    future: F,
+    func: Option<Func>,
+}
+
+impl<F: Future, Func: FnOnce(F.Output) -> U, U> Future for Map<F, Func> {
+    type Output = U
+    fn poll(mut self, cx: &mut Context) -> Poll<U> {
+        match self.future.poll(cx) {
+            Poll.Ready(val) => Poll.Ready(self.func.take().unwrap()(val)),
+            Poll.Pending => Poll.Pending,
+        }
+    }
+}
+
+// Then (flat map / and_then)
+enum ThenState<F1, F2> { First(F1), Second(F2) }
+
+struct Then<F1: Future, F2: Future, Func> {
+    state: ThenState<F1, F2>,
+    func: Option<Func>,
+}
+
+impl<F1: Future, F2: Future, Func: FnOnce(F1.Output) -> F2> Future for Then<F1, F2, Func> {
+    type Output = F2.Output
+    fn poll(mut self, cx: &mut Context) -> Poll<F2.Output> {
+        match &mut self.state {
+            ThenState.First(f1) => match f1.poll(cx) {
+                Poll.Ready(val) => {
+                    let f2 = self.func.take().unwrap()(val)
+                    self.state = ThenState.Second(f2)
+                    self.poll(cx)
+                }
+                Poll.Pending => Poll.Pending,
+            },
+            ThenState.Second(f2) => f2.poll(cx),
+        }
+    }
+}
+
+// Join — run two futures concurrently
+struct Join<A: Future, B: Future> {
+    a: Option<A>, b: Option<B>,
+    a_result: Option<A.Output>, b_result: Option<B.Output>,
+}
+
+impl<A: Future, B: Future> Future for Join<A, B> {
+    type Output = (A.Output, B.Output)
+    fn poll(mut self, cx: &mut Context) -> Poll<(A.Output, B.Output)> {
+        if let some(a) = &mut self.a {
+            if let Poll.Ready(val) = a.poll(cx) {
+                self.a_result = some(val); self.a = none
+            }
+        }
+        if let some(b) = &mut self.b {
+            if let Poll.Ready(val) = b.poll(cx) {
+                self.b_result = some(val); self.b = none
+            }
+        }
+        if self.a_result.is_some() && self.b_result.is_some() {
+            Poll.Ready((self.a_result.take().unwrap(), self.b_result.take().unwrap()))
+        } else { Poll.Pending }
+    }
+}
+
+fn join<A: Future, B: Future>(a: A, b: B) -> Join<A, B> {
+    Join { a: some(a), b: some(b), a_result: none, b_result: none }
+}
+
+// ── Timer (simulated) ────────────────────────────────────────────────────────
+struct Timer {
+    ticks_remaining: u32,
+}
+
+impl Future for Timer {
+    type Output = ()
+    fn poll(mut self, cx: &mut Context) -> Poll<()> {
+        if self.ticks_remaining == 0 { return Poll.Ready(()) }
+        self.ticks_remaining -= 1
+        cx.waker().wake()
+        Poll.Pending
+    }
+}
+
+fn timer(ticks: u32) -> Timer { Timer { ticks_remaining: ticks } }
+
+fn main() {
+    // Ready future
+    let mut cx_waker = Waker { task_id: 0, wake_queue: Arc.new(Mutex.new(VecDeque.new())) }
+    let mut cx = Context { waker: cx_waker }
+    let mut fut = ready(42)
+    match fut.poll(&mut cx) {
+        Poll.Ready(v) => assert(v == 42),
+        Poll.Pending => panic("should be ready"),
+    }
+    print("Ready future ✓")
+
+    // Yield future
+    let mut yf = yield_now()
+    match yf.poll(&mut cx) {
+        Poll.Pending => {}
+        _ => panic("should be pending"),
+    }
+    match yf.poll(&mut cx) {
+        Poll.Ready(()) => {}
+        _ => panic("should be ready"),
+    }
+    print("Yield future ✓")
+
+    // Timer
+    let mut t = timer(3)
+    assert(matches!(t.poll(&mut cx), Poll.Pending))
+    assert(matches!(t.poll(&mut cx), Poll.Pending))
+    assert(matches!(t.poll(&mut cx), Poll.Pending))
+    assert(matches!(t.poll(&mut cx), Poll.Ready(())))
+    print("Timer(3) ✓")
+
+    // Executor
+    let mut exec = Executor.new()
+    let t1 = exec.spawn(ready(()))
+    let t2 = exec.spawn(timer(2))
+    assert(exec.task_count() == 2)
+    exec.run()
+    assert(exec.completed_count() == 2)
+    print("Executor ran 2 tasks ✓")
+
+    print("Tutorial 49 — Async Runtime complete ✓")
+}
