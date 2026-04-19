@@ -1,0 +1,60 @@
+// 28_dsl/challenge.ltl — State machine DSL
+// Run: lateralus run 28_dsl/challenge.ltl
+
+// Challenge: implement a fluent state machine DSL
+//
+// Usage:
+//   let traffic = StateMachine.new("red")
+//     .transition("red",    "go",   "green")
+//     .transition("green",  "slow", "yellow")
+//     .transition("yellow", "stop", "red")
+//   traffic.trigger("go")    // -> "green"
+//   traffic.trigger("slow")  // -> "yellow"
+
+struct StateMachine {
+    current:     string,
+    transitions: dict<(string, string), string>,
+}
+
+impl StateMachine {
+    fn new(initial: string) -> StateMachine {
+        StateMachine { current: initial, transitions: {} }
+    }
+
+    fn transition(mut self, from: string, event: string, to: string) -> StateMachine {
+        self.transitions[(from, event)] = to
+        self
+    }
+
+    fn trigger(mut self, event: string) -> Result<string, string> {
+        match self.transitions.get((self.current.clone(), event)) {
+            none       => err("No transition from '${self.current}' on '${event}'"),
+            some(next) => { self.current = next; ok(next) },
+        }
+    }
+
+    fn state(self) -> string { self.current.clone() }
+}
+
+fn main() {
+    mut traffic = StateMachine.new("red")
+        .transition("red",    "go",   "green")
+        .transition("green",  "slow", "yellow")
+        .transition("yellow", "stop", "red")
+
+    assert_eq(traffic.state(), "red")
+    traffic.trigger("go").unwrap()
+    assert_eq(traffic.state(), "green")
+    traffic.trigger("slow").unwrap()
+    assert_eq(traffic.state(), "yellow")
+    traffic.trigger("stop").unwrap()
+    assert_eq(traffic.state(), "red")
+
+    let err = traffic.trigger("slow")
+    assert!(err.is_err())
+
+    print("Traffic light: ${traffic.state()}")
+    print("Challenge 28 complete!")
+}
+
+main()
