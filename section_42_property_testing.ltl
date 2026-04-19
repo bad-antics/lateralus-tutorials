@@ -1,0 +1,203 @@
+// Tutorial 42 — Property-Based Testing
+// Generate random inputs to test properties that should always hold.
+
+use std.random
+use std.collections.HashMap
+
+// ── Generator trait ──────────────────────────────────────────────────────────
+trait Arbitrary {
+    fn arbitrary(rng: &mut random.Rng) -> Self
+    fn shrink(self) -> [Self] { [] }
+}
+
+impl Arbitrary for i64 {
+    fn arbitrary(rng: &mut random.Rng) -> i64 { rng.gen_range(-1000..1000) }
+    fn shrink(self) -> [i64] {
+        if self == 0 { return [] }
+        let mut shrunk: [i64] = [0]
+        if self > 0 { shrunk.push(self - 1); shrunk.push(self / 2) }
+        if self < 0 { shrunk.push(self + 1); shrunk.push(-self) }
+        shrunk
+    }
+}
+
+impl Arbitrary for string {
+    fn arbitrary(rng: &mut random.Rng) -> string {
+        let len = rng.gen_range(0..50)
+        (0..len).map(|_| rng.gen_range(32..127) as u8 as char).collect()
+    }
+    fn shrink(self) -> [string] {
+        if self.is_empty() { return [] }
+        let mut shrunk: [string] = ["".to_string()]
+        if self.len() > 1 {
+            shrunk.push(self[..self.len()/2].to_string())
+            shrunk.push(self[1..].to_string())
+        }
+        shrunk
+    }
+}
+
+impl<T: Arbitrary> Arbitrary for [T] {
+    fn arbitrary(rng: &mut random.Rng) -> [T] {
+        let len = rng.gen_range(0..20)
+        (0..len).map(|_| T.arbitrary(rng)).collect()
+    }
+    fn shrink(self) -> [[T]] {
+        if self.is_empty() { return [] }
+        let mut shrunk: [[T]] = [[]]
+        if self.len() > 1 {
+            shrunk.push(self[..self.len()/2].to_vec())
+            shrunk.push(self[1..].to_vec())
+        }
+        shrunk
+    }
+}
+
+// ── Property test runner ─────────────────────────────────────────────────────
+struct PropTestConfig {
+    num_tests: u32,
+    max_shrinks: u32,
+    seed: Option<u64>,
+}
+
+impl PropTestConfig {
+    fn default() -> PropTestConfig {
+        PropTestConfig { num_tests: 100, max_shrinks: 100, seed: none }
+    }
+}
+
+enum PropResult<T> {
+    Pass,
+    Fail { input: T, shrunk: Option<T>, error: string },
+}
+
+fn prop_test<T: Arbitrary + Clone + std.fmt.Debug>(
+    config: &PropTestConfig,
+    property: fn(T) -> bool,
+) -> PropResult<T> {
+    let mut rng = match config.seed {
+        some(s) => random.Rng.from_seed(s),
+        none    => random.Rng.new(),
+    }
+
+    for i in 0..config.num_tests {
+        let input = T.arbitrary(&mut rng)
+        if !property(input.clone()) {
+            // Try to shrink
+            let shrunk = try_shrink(input.clone(), property, config.max_shrinks)
+            return PropResult.Fail {
+                input: input.clone(),
+                shrunk,
+                error: format!("Failed on test #{i}"),
+            }
+        }
+    }
+    PropResult.Pass
+}
+
+fn try_shrink<T: Arbitrary + Clone>(input: T, property: fn(T) -> bool, max: u32) -> Option<T> {
+    let mut smallest = input.clone()
+    let mut found_smaller = true
+    let mut attempts: u32 = 0
+
+    while found_smaller && attempts < max {
+        found_smaller = false
+        for candidate in smallest.shrink() {
+            attempts += 1
+            if !property(candidate.clone()) {
+                smallest = candidate
+                found_smaller = true
+                break
+            }
+        }
+    }
+    if smallest != input { some(smallest) } else { none }
+}
+
+// ── Example properties ───────────────────────────────────────────────────────
+fn prop_sort_preserves_length(mut list: [i64]) -> bool {
+    let original_len = list.len()
+    list.sort()
+    list.len() == original_len
+}
+
+fn prop_sort_is_sorted(mut list: [i64]) -> bool {
+    list.sort()
+    list.windows(2).all(|w| w[0] <= w[1])
+}
+
+fn prop_sort_preserves_elements(mut list: [i64]) -> bool {
+    let mut original = list.clone()
+    list.sort()
+    original.sort()
+    list == original
+}
+
+fn prop_reverse_reverse_is_identity(list: [i64]) -> bool {
+    let mut reversed = list.clone()
+    reversed.reverse()
+    reversed.reverse()
+    reversed == list
+}
+
+fn prop_addition_commutative(pair: (i64, i64)) -> bool {
+    pair.0 + pair.1 == pair.1 + pair.0
+}
+
+fn prop_string_split_join(s: string) -> bool {
+    let parts = s.split(" ")
+    let rejoined = parts.join(" ")
+    rejoined == s  // only true for single-space splits
+}
+
+impl Arbitrary for (i64, i64) {
+    fn arbitrary(rng: &mut random.Rng) -> (i64, i64) {
+        (i64.arbitrary(rng), i64.arbitrary(rng))
+    }
+}
+
+fn main() {
+    let config = PropTestConfig.default()
+
+    // Test sort properties
+    match prop_test::<[i64]>(&config, prop_sort_preserves_length) {
+        PropResult.Pass => print("✓ sort preserves length"),
+        PropResult.Fail { error, .. } => panic("✗ ${error}"),
+    }
+
+    match prop_test::<[i64]>(&config, prop_sort_is_sorted) {
+        PropResult.Pass => print("✓ sort produces sorted output"),
+        PropResult.Fail { error, .. } => panic("✗ ${error}"),
+    }
+
+    match prop_test::<[i64]>(&config, prop_sort_preserves_elements) {
+        PropResult.Pass => print("✓ sort preserves elements"),
+        PropResult.Fail { error, .. } => panic("✗ ${error}"),
+    }
+
+    match prop_test::<[i64]>(&config, prop_reverse_reverse_is_identity) {
+        PropResult.Pass => print("✓ reverse∘reverse = identity"),
+        PropResult.Fail { error, .. } => panic("✗ ${error}"),
+    }
+
+    match prop_test::<(i64, i64)>(&config, prop_addition_commutative) {
+        PropResult.Pass => print("✓ addition is commutative"),
+        PropResult.Fail { error, .. } => panic("✗ ${error}"),
+    }
+
+    // Shrinking test
+    let val = 42i64
+    let shrunk = val.shrink()
+    assert(shrunk.contains(&0))
+    assert(shrunk.contains(&41))
+    assert(shrunk.contains(&21))
+    print("i64 shrinking: ${shrunk:?} ✓")
+
+    let vec_val: [i64] = [1, 2, 3, 4, 5]
+    let shrunk_vecs = vec_val.shrink()
+    assert(shrunk_vecs.len() > 0)
+    assert(shrunk_vecs.contains(&[]))
+    print("Vec shrinking ✓")
+
+    print("Tutorial 42 — Property-Based Testing complete ✓")
+}
