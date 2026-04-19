@@ -1,0 +1,264 @@
+// Tutorial 43 — Entity Component System (ECS)
+// Build a data-oriented game architecture with archetypes and queries.
+
+use std.collections.{HashMap, HashSet}
+use std.any.TypeId
+
+type EntityId = u64
+
+// ── Component storage ────────────────────────────────────────────────────────
+trait Component: 'static {}
+
+struct ComponentVec {
+    data: Box<dyn std.any.Any>,
+    type_id: TypeId,
+}
+
+impl ComponentVec {
+    fn new<T: Component>() -> ComponentVec {
+        ComponentVec {
+            data: Box.new(Vec::<T>.new()) as Box<dyn std.any.Any>,
+            type_id: TypeId.of::<T>(),
+        }
+    }
+
+    fn push<T: Component>(mut self, component: T) {
+        let vec = self.data.downcast_mut::<Vec<T>>().unwrap()
+        vec.push(component)
+    }
+
+    fn get<T: Component>(self, index: usize) -> Option<&T> {
+        let vec = self.data.downcast_ref::<Vec<T>>()?
+        vec.get(index)
+    }
+
+    fn get_mut<T: Component>(mut self, index: usize) -> Option<&mut T> {
+        let vec = self.data.downcast_mut::<Vec<T>>()?
+        vec.get_mut(index)
+    }
+
+    fn len(self) -> usize {
+        // Type-erased length check via known types
+        0  // simplified
+    }
+}
+
+// ── Archetype ────────────────────────────────────────────────────────────────
+struct Archetype {
+    id:          u64,
+    type_ids:    [TypeId],
+    columns:     HashMap<TypeId, ComponentVec>,
+    entities:    [EntityId],
+    entity_rows: HashMap<EntityId, usize>,
+}
+
+impl Archetype {
+    fn new(id: u64, type_ids: [TypeId]) -> Archetype {
+        Archetype {
+            id, type_ids, columns: HashMap.new(),
+            entities: [], entity_rows: HashMap.new(),
+        }
+    }
+
+    fn has_component(self, type_id: TypeId) -> bool {
+        self.type_ids.contains(&type_id)
+    }
+
+    fn matches(self, required: &[TypeId]) -> bool {
+        required.iter().all(|t| self.type_ids.contains(t))
+    }
+}
+
+// ── World ────────────────────────────────────────────────────────────────────
+pub struct World {
+    next_entity:    EntityId,
+    archetypes:     [Archetype],
+    entity_archetype: HashMap<EntityId, usize>,
+    next_archetype: u64,
+    resources:      HashMap<TypeId, Box<dyn std.any.Any>>,
+}
+
+impl World {
+    pub fn new() -> World {
+        World {
+            next_entity: 1, archetypes: [], entity_archetype: HashMap.new(),
+            next_archetype: 0, resources: HashMap.new(),
+        }
+    }
+
+    pub fn spawn(mut self) -> EntityBuilder {
+        let id = self.next_entity
+        self.next_entity += 1
+        EntityBuilder { world: self, entity: id, components: HashMap.new() }
+    }
+
+    pub fn despawn(mut self, entity: EntityId) -> bool {
+        if let some(arch_idx) = self.entity_archetype.remove(&entity) {
+            let arch = &mut self.archetypes[arch_idx]
+            if let some(row) = arch.entity_rows.remove(&entity) {
+                arch.entities.swap_remove(row)
+                if row < arch.entities.len() {
+                    let moved = arch.entities[row]
+                    arch.entity_rows.insert(moved, row)
+                }
+            }
+            true
+        } else { false }
+    }
+
+    pub fn query<Q: Query>(self) -> QueryIter<Q> {
+        let required = Q.required_types()
+        let matching: [usize] = self.archetypes.iter().enumerate()
+            .filter(|(_, a)| a.matches(&required))
+            .map(|(i, _)| i)
+            .collect()
+        QueryIter { world: self, archetype_indices: matching, current_arch: 0, current_row: 0, _phantom: PhantomData }
+    }
+
+    pub fn insert_resource<R: 'static>(mut self, resource: R) {
+        self.resources.insert(TypeId.of::<R>(), Box.new(resource))
+    }
+
+    pub fn get_resource<R: 'static>(self) -> Option<&R> {
+        self.resources.get(&TypeId.of::<R>())?.downcast_ref()
+    }
+
+    pub fn entity_count(self) -> usize {
+        self.entity_archetype.len()
+    }
+}
+
+// ── Entity builder ───────────────────────────────────────────────────────────
+struct EntityBuilder<'w> {
+    world: &'w mut World,
+    entity: EntityId,
+    components: HashMap<TypeId, Box<dyn std.any.Any>>,
+}
+
+impl<'w> EntityBuilder<'w> {
+    fn with<T: Component>(mut self, component: T) -> EntityBuilder<'w> {
+        self.components.insert(TypeId.of::<T>(), Box.new(component))
+        self
+    }
+
+    fn build(self) -> EntityId {
+        let type_ids: [TypeId] = self.components.keys().cloned().collect()
+        // Find or create matching archetype
+        let arch_idx = self.world.archetypes.iter().position(|a| a.type_ids == type_ids)
+            .unwrap_or_else(|| {
+                let id = self.world.next_archetype
+                self.world.next_archetype += 1
+                self.world.archetypes.push(Archetype.new(id, type_ids.clone()))
+                self.world.archetypes.len() - 1
+            })
+
+        let arch = &mut self.world.archetypes[arch_idx]
+        let row = arch.entities.len()
+        arch.entities.push(self.entity)
+        arch.entity_rows.insert(self.entity, row)
+        self.world.entity_archetype.insert(self.entity, arch_idx)
+        self.entity
+    }
+}
+
+// ── Query system ─────────────────────────────────────────────────────────────
+trait Query {
+    fn required_types() -> [TypeId]
+}
+
+struct QueryIter<'w, Q: Query> {
+    world: &'w World,
+    archetype_indices: [usize],
+    current_arch: usize,
+    current_row: usize,
+    _phantom: PhantomData<Q>,
+}
+
+// ── Example components ───────────────────────────────────────────────────────
+struct Position { x: f32, y: f32, z: f32 }
+impl Component for Position {}
+
+struct Velocity { dx: f32, dy: f32, dz: f32 }
+impl Component for Velocity {}
+
+struct Health { current: f32, max: f32 }
+impl Component for Health {}
+
+struct Name { value: string }
+impl Component for Name {}
+
+struct Sprite { texture_id: u32, width: u32, height: u32 }
+impl Component for Sprite {}
+
+// ── Systems ──────────────────────────────────────────────────────────────────
+fn movement_system(world: &mut World, dt: f32) {
+    // In a real ECS, this would iterate via query
+    for arch in &mut world.archetypes {
+        if arch.has_component(TypeId.of::<Position>()) && arch.has_component(TypeId.of::<Velocity>()) {
+            for row in 0..arch.entities.len() {
+                // Update position by velocity * dt
+                // pos.x += vel.dx * dt; ...
+            }
+        }
+    }
+}
+
+fn damage_system(world: &mut World, target: EntityId, amount: f32) {
+    if let some(&arch_idx) = world.entity_archetype.get(&target) {
+        let arch = &mut world.archetypes[arch_idx]
+        if let some(&row) = arch.entity_rows.get(&target) {
+            if let some(health) = arch.columns.get_mut(&TypeId.of::<Health>())
+                .and_then(|c| c.get_mut::<Health>(row)) {
+                health.current = (health.current - amount).max(0.0)
+            }
+        }
+    }
+}
+
+struct DeltaTime(f32);
+
+fn main() {
+    let mut world = World.new()
+
+    // Spawn entities
+    let player = world.spawn()
+        .with(Position { x: 0.0, y: 0.0, z: 0.0 })
+        .with(Velocity { dx: 1.0, dy: 0.0, dz: 0.0 })
+        .with(Health { current: 100.0, max: 100.0 })
+        .with(Name { value: "Player".to_string() })
+        .build()
+
+    let enemy = world.spawn()
+        .with(Position { x: 10.0, y: 5.0, z: 0.0 })
+        .with(Velocity { dx: -0.5, dy: 0.0, dz: 0.0 })
+        .with(Health { current: 50.0, max: 50.0 })
+        .with(Name { value: "Goblin".to_string() })
+        .build()
+
+    let prop = world.spawn()
+        .with(Position { x: 5.0, y: 0.0, z: 0.0 })
+        .with(Sprite { texture_id: 1, width: 32, height: 32 })
+        .build()
+
+    assert(world.entity_count() == 3)
+    print("Spawned ${world.entity_count()} entities ✓")
+
+    // Resource
+    world.insert_resource(DeltaTime(0.016))
+    let dt = world.get_resource::<DeltaTime>().unwrap().0
+    assert((dt - 0.016).abs() < 1e-6)
+    print("Resource system ✓")
+
+    // Despawn
+    assert(world.despawn(prop))
+    assert(world.entity_count() == 2)
+    print("Despawn ✓")
+
+    // Archetype matching
+    let pos_vel_types = [TypeId.of::<Position>(), TypeId.of::<Velocity>()]
+    let matching = world.archetypes.iter().filter(|a| a.matches(&pos_vel_types)).count()
+    assert(matching >= 1, "should find archetype with Position+Velocity")
+    print("Archetype query matching ✓")
+
+    print("Tutorial 43 — ECS Game Engine complete ✓")
+}
