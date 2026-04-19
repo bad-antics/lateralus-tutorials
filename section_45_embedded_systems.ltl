@@ -1,0 +1,270 @@
+// Tutorial 45 — Embedded Systems Programming
+// Bare-metal Lateralus: MMIO, interrupts, UART, SPI, GPIO.
+
+use std.mem
+
+// ── Volatile MMIO ────────────────────────────────────────────────────────────
+struct Volatile<T: Copy> { ptr: *mut T }
+
+impl<T: Copy> Volatile<T> {
+    fn new(addr: usize) -> Volatile<T> {
+        Volatile { ptr: addr as *mut T }
+    }
+
+    fn read(self) -> T { unsafe { std.ptr.read_volatile(self.ptr) } }
+    fn write(self, val: T) { unsafe { std.ptr.write_volatile(self.ptr, val) } }
+    fn modify(self, f: fn(T) -> T) { self.write(f(self.read())) }
+}
+
+// ── GPIO driver ──────────────────────────────────────────────────────────────
+const GPIO_BASE: usize = 0x4002_0000
+
+struct GpioRegisters {
+    moder:   Volatile<u32>,  // mode register
+    otyper:  Volatile<u32>,  // output type
+    ospeedr: Volatile<u32>,  // output speed
+    pupdr:   Volatile<u32>,  // pull-up/pull-down
+    idr:     Volatile<u32>,  // input data
+    odr:     Volatile<u32>,  // output data
+    bsrr:    Volatile<u32>,  // bit set/reset
+}
+
+enum GpioMode { Input, Output, AlternateFunction, Analog }
+enum GpioPin { P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14, P15 }
+
+impl GpioPin {
+    fn num(self) -> u32 { match self { GpioPin.P0 => 0, GpioPin.P1 => 1, /* ... */ _ => 0 } }
+}
+
+struct Gpio {
+    regs: GpioRegisters,
+}
+
+impl Gpio {
+    fn new(base: usize) -> Gpio {
+        Gpio { regs: GpioRegisters {
+            moder:   Volatile.new(base + 0x00),
+            otyper:  Volatile.new(base + 0x04),
+            ospeedr: Volatile.new(base + 0x08),
+            pupdr:   Volatile.new(base + 0x0C),
+            idr:     Volatile.new(base + 0x10),
+            odr:     Volatile.new(base + 0x14),
+            bsrr:    Volatile.new(base + 0x18),
+        }}
+    }
+
+    fn set_mode(self, pin: GpioPin, mode: GpioMode) {
+        let n = pin.num()
+        let bits: u32 = match mode {
+            GpioMode.Input => 0b00, GpioMode.Output => 0b01,
+            GpioMode.AlternateFunction => 0b10, GpioMode.Analog => 0b11,
+        }
+        self.regs.moder.modify(|v| (v & !(0b11 << (n * 2))) | (bits << (n * 2)))
+    }
+
+    fn set_high(self, pin: GpioPin) { self.regs.bsrr.write(1 << pin.num()) }
+    fn set_low(self, pin: GpioPin) { self.regs.bsrr.write(1 << (pin.num() + 16)) }
+    fn read_pin(self, pin: GpioPin) -> bool { (self.regs.idr.read() >> pin.num()) & 1 == 1 }
+    fn toggle(self, pin: GpioPin) { self.regs.odr.modify(|v| v ^ (1 << pin.num())) }
+}
+
+// ── UART driver ──────────────────────────────────────────────────────────────
+const UART_BASE: usize = 0x4001_1000
+
+struct UartRegisters {
+    sr:   Volatile<u32>,  // status
+    dr:   Volatile<u32>,  // data
+    brr:  Volatile<u32>,  // baud rate
+    cr1:  Volatile<u32>,  // control 1
+    cr2:  Volatile<u32>,  // control 2
+    cr3:  Volatile<u32>,  // control 3
+}
+
+const UART_SR_TXE:  u32 = 1 << 7   // transmit data register empty
+const UART_SR_RXNE: u32 = 1 << 5   // read data register not empty
+const UART_SR_TC:   u32 = 1 << 6   // transmission complete
+const UART_CR1_UE:  u32 = 1 << 13  // UART enable
+const UART_CR1_TE:  u32 = 1 << 3   // transmitter enable
+const UART_CR1_RE:  u32 = 1 << 2   // receiver enable
+
+struct Uart {
+    regs: UartRegisters,
+}
+
+impl Uart {
+    fn new(base: usize) -> Uart {
+        Uart { regs: UartRegisters {
+            sr:  Volatile.new(base + 0x00),
+            dr:  Volatile.new(base + 0x04),
+            brr: Volatile.new(base + 0x08),
+            cr1: Volatile.new(base + 0x0C),
+            cr2: Volatile.new(base + 0x10),
+            cr3: Volatile.new(base + 0x14),
+        }}
+    }
+
+    fn init(self, baud: u32, clock: u32) {
+        self.regs.cr1.write(0)  // disable
+        self.regs.brr.write(clock / baud)
+        self.regs.cr1.write(UART_CR1_UE | UART_CR1_TE | UART_CR1_RE)
+    }
+
+    fn write_byte(self, byte: u8) {
+        while self.regs.sr.read() & UART_SR_TXE == 0 {}
+        self.regs.dr.write(byte as u32)
+    }
+
+    fn read_byte(self) -> u8 {
+        while self.regs.sr.read() & UART_SR_RXNE == 0 {}
+        (self.regs.dr.read() & 0xFF) as u8
+    }
+
+    fn write_str(self, s: &str) { for b in s.bytes() { self.write_byte(b) } }
+
+    fn flush(self) { while self.regs.sr.read() & UART_SR_TC == 0 {} }
+}
+
+// ── SPI driver ───────────────────────────────────────────────────────────────
+const SPI_BASE: usize = 0x4001_3000
+
+struct SpiRegisters {
+    cr1:  Volatile<u32>,
+    cr2:  Volatile<u32>,
+    sr:   Volatile<u32>,
+    dr:   Volatile<u32>,
+}
+
+const SPI_SR_TXE:  u32 = 1 << 1
+const SPI_SR_RXNE: u32 = 1 << 0
+const SPI_SR_BSY:  u32 = 1 << 7
+const SPI_CR1_SPE: u32 = 1 << 6
+const SPI_CR1_MSTR: u32 = 1 << 2
+
+struct Spi {
+    regs: SpiRegisters,
+}
+
+impl Spi {
+    fn new(base: usize) -> Spi {
+        Spi { regs: SpiRegisters {
+            cr1: Volatile.new(base + 0x00),
+            cr2: Volatile.new(base + 0x04),
+            sr:  Volatile.new(base + 0x08),
+            dr:  Volatile.new(base + 0x0C),
+        }}
+    }
+
+    fn init(self, prescaler: u8) {
+        let prescaler_bits = match prescaler {
+            2 => 0b000, 4 => 0b001, 8 => 0b010, 16 => 0b011,
+            32 => 0b100, 64 => 0b101, 128 => 0b110, _ => 0b111,
+        }
+        self.regs.cr1.write(SPI_CR1_SPE | SPI_CR1_MSTR | ((prescaler_bits as u32) << 3))
+    }
+
+    fn transfer(self, data: u8) -> u8 {
+        while self.regs.sr.read() & SPI_SR_TXE == 0 {}
+        self.regs.dr.write(data as u32)
+        while self.regs.sr.read() & SPI_SR_RXNE == 0 {}
+        (self.regs.dr.read() & 0xFF) as u8
+    }
+
+    fn write(self, data: &[u8]) { for &b in data { self.transfer(b); } }
+    fn is_busy(self) -> bool { self.regs.sr.read() & SPI_SR_BSY != 0 }
+}
+
+// ── Interrupt vector table ───────────────────────────────────────────────────
+type IsrHandler = fn()
+
+struct InterruptController {
+    vectors: [Option<IsrHandler>; 128],
+    priorities: [u8; 128],
+}
+
+impl InterruptController {
+    fn new() -> InterruptController {
+        InterruptController { vectors: [none; 128], priorities: [0; 128] }
+    }
+
+    fn register(mut self, irq: u8, handler: IsrHandler, priority: u8) {
+        self.vectors[irq as usize] = some(handler)
+        self.priorities[irq as usize] = priority
+    }
+
+    fn dispatch(self, irq: u8) {
+        if let some(handler) = self.vectors[irq as usize] { handler() }
+    }
+
+    fn enable_irq(self, irq: u8) {
+        let nvic_iser = Volatile::<u32>.new(0xE000_E100 + ((irq / 32) as usize) * 4)
+        nvic_iser.modify(|v| v | (1 << (irq % 32)))
+    }
+
+    fn disable_irq(self, irq: u8) {
+        let nvic_icer = Volatile::<u32>.new(0xE000_E180 + ((irq / 32) as usize) * 4)
+        nvic_icer.write(1 << (irq % 32))
+    }
+}
+
+// ── Ring buffer for interrupt-safe communication ─────────────────────────────
+struct RingBuffer<T: Copy, const N: usize> {
+    buffer: [T; N],
+    head: usize,
+    tail: usize,
+}
+
+impl<T: Copy + Default, const N: usize> RingBuffer<T, N> {
+    fn new() -> RingBuffer<T, N> {
+        RingBuffer { buffer: [T.default(); N], head: 0, tail: 0 }
+    }
+
+    fn push(mut self, item: T) -> bool {
+        let next = (self.head + 1) % N
+        if next == self.tail { return false }
+        self.buffer[self.head] = item
+        self.head = next
+        true
+    }
+
+    fn pop(mut self) -> Option<T> {
+        if self.tail == self.head { return none }
+        let item = self.buffer[self.tail]
+        self.tail = (self.tail + 1) % N
+        some(item)
+    }
+
+    fn is_empty(self) -> bool { self.head == self.tail }
+    fn is_full(self) -> bool { (self.head + 1) % N == self.tail }
+    fn len(self) -> usize { (self.head + N - self.tail) % N }
+}
+
+fn main() {
+    // Ring buffer test (safe to test without hardware)
+    let mut rb = RingBuffer::<u8, 8>.new()
+    assert(rb.is_empty())
+    assert(rb.push(0x41))
+    assert(rb.push(0x42))
+    assert(rb.push(0x43))
+    assert(rb.len() == 3)
+    assert(rb.pop() == some(0x41))
+    assert(rb.pop() == some(0x42))
+    assert(rb.len() == 1)
+    print("Ring buffer ✓")
+
+    // Fill to capacity
+    let mut rb2 = RingBuffer::<u8, 4>.new()
+    assert(rb2.push(1)); assert(rb2.push(2)); assert(rb2.push(3))
+    assert(!rb2.push(4))  // full (N-1 usable slots)
+    assert(rb2.is_full())
+    print("Ring buffer full ✓")
+
+    // Interrupt controller
+    let mut ic = InterruptController.new()
+    ic.register(16, || { /* UART rx handler */ }, 5)
+    ic.register(25, || { /* Timer handler */ }, 3)
+    assert(ic.vectors[16].is_some())
+    assert(ic.priorities[16] == 5)
+    print("Interrupt controller ✓")
+
+    print("Tutorial 45 — Embedded Systems complete ✓")
+}
