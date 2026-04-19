@@ -1,0 +1,94 @@
+// 30_projects/introduction.ltl — Capstone: mini HTTP server from scratch
+// Run: lateralus run 30_projects/introduction.ltl
+
+use std.net.TcpListener
+use std.io.{BufReader, BufWriter}
+
+struct Request {
+    method:  string,
+    path:    string,
+    headers: dict<string, string>,
+    body:    string,
+}
+
+struct Response {
+    status:  int,
+    headers: dict<string, string>,
+    body:    string,
+}
+
+impl Response {
+    fn ok(body: string) -> Response {
+        Response {
+            status: 200,
+            headers: { "Content-Type": "text/plain", "Content-Length": body.len().to_string() },
+            body,
+        }
+    }
+
+    fn not_found() -> Response {
+        let body = "404 Not Found"
+        Response {
+            status: 404,
+            headers: { "Content-Type": "text/plain" },
+            body,
+        }
+    }
+
+    fn to_bytes(self) -> string {
+        let status_line = "HTTP/1.1 ${self.status} OK
+"
+        let headers = self.headers
+            |> map(|(k, v)| "${k}: ${v}")
+            |> join("
+")
+        "${status_line}${headers}
+
+${self.body}"
+    }
+}
+
+fn parse_request(raw: string) -> Request? {
+    let lines = raw.lines() |> collect()
+    if lines.is_empty() { return none }
+    let parts  = lines[0].split(" ")
+    if parts.len() < 2 { return none }
+    let method = parts[0].to_string()
+    let path   = parts[1].to_string()
+    mut headers: dict<string, string> = {}
+    mut i = 1
+    while i < lines.len() && !lines[i].is_empty() {
+        let kv = lines[i].split_once(": ")
+        if let some((k, v)) = kv { headers[k] = v }
+        i += 1
+    }
+    let body = lines[i+1..].join("
+")
+    some(Request { method, path, headers, body })
+}
+
+fn route(req: Request) -> Response {
+    match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/")        => Response.ok("Welcome to the Lateralus HTTP server!"),
+        ("GET", "/ping")    => Response.ok("pong"),
+        ("GET", "/version") => Response.ok("lateralus/0.1.0"),
+        _                   => Response.not_found(),
+    }
+}
+
+fn main() {
+    let listener = TcpListener.bind("127.0.0.1:7878")
+    print("Server running at http://127.0.0.1:7878")
+
+    for stream in listener.incoming() {
+        let mut reader = BufReader.new(stream.clone())
+        let raw = reader.read_to_string()
+        if let some(req) = parse_request(raw) {
+            let resp = route(req)
+            let mut writer = BufWriter.new(stream)
+            writer.write(resp.to_bytes())
+        }
+    }
+}
+
+main()
