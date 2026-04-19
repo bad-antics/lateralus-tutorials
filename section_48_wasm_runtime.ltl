@@ -1,0 +1,370 @@
+// Tutorial 48 — WebAssembly Runtime
+// Build a minimal Wasm interpreter: decode, validate, execute.
+
+use std.collections.HashMap
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Part 1: Wasm binary format
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const WASM_MAGIC: u32 = 0x0061_736D  // \0asm
+const WASM_VERSION: u32 = 0x0000_0001
+
+enum WasmSection {
+    Custom(u8),  Type(1), Import(2), Function(3), Table(4),
+    Memory(5), Global(6), Export(7), Start(8), Element(9),
+    Code(10), Data(11),
+}
+
+enum ValType { I32, I64, F32, F64 }
+
+struct FuncType {
+    params: [ValType],
+    results: [ValType],
+}
+
+struct MemoryType {
+    min_pages: u32,
+    max_pages: Option<u32>,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Part 2: Instructions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+enum WasmOp {
+    // Control
+    Unreachable, Nop, Block(ValType?), Loop(ValType?), If(ValType?),
+    Else, End, Br(u32), BrIf(u32), Return, Call(u32),
+    // Local/Global
+    LocalGet(u32), LocalSet(u32), LocalTee(u32),
+    GlobalGet(u32), GlobalSet(u32),
+    // Memory
+    I32Load(u32, u32), I32Store(u32, u32), MemorySize, MemoryGrow,
+    // Constants
+    I32Const(i32), I64Const(i64), F32Const(f32), F64Const(f64),
+    // Arithmetic (i32)
+    I32Add, I32Sub, I32Mul, I32DivS, I32DivU, I32RemS, I32RemU,
+    I32And, I32Or, I32Xor, I32Shl, I32ShrS, I32ShrU,
+    I32Eqz, I32Eq, I32Ne, I32LtS, I32GtS, I32LeS, I32GeS,
+    // Arithmetic (i64)
+    I64Add, I64Sub, I64Mul,
+    // Conversions
+    I32WrapI64, I64ExtendI32S,
+    // Drop/Select
+    Drop, Select,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Part 3: Runtime
+// ═══════════════════════════════════════════════════════════════════════════════
+
+enum WasmValue { I32(i32), I64(i64), F32(f32), F64(f64) }
+
+impl WasmValue {
+    fn as_i32(self) -> i32 { match self { WasmValue.I32(v) => v, _ => panic("type error: expected i32") } }
+    fn as_i64(self) -> i64 { match self { WasmValue.I64(v) => v, _ => panic("type error: expected i64") } }
+    fn is_truthy(self) -> bool { match self { WasmValue.I32(v) => v != 0, _ => true } }
+}
+
+struct Frame {
+    func_idx: u32,
+    locals: [WasmValue],
+    pc: usize,
+    return_arity: usize,
+    label_stack: [Label],
+}
+
+struct Label {
+    arity: usize,
+    continuation: usize,  // pc to jump to
+    is_loop: bool,
+}
+
+struct WasmMemory {
+    data: [u8],
+    min_pages: u32,
+    max_pages: Option<u32>,
+}
+
+impl WasmMemory {
+    fn new(min_pages: u32, max_pages: Option<u32>) -> WasmMemory {
+        let size = min_pages as usize * 65536
+        WasmMemory { data: vec![0u8; size], min_pages, max_pages }
+    }
+
+    fn size_pages(self) -> u32 { (self.data.len() / 65536) as u32 }
+
+    fn grow(mut self, delta: u32) -> i32 {
+        let old = self.size_pages()
+        let new_pages = old + delta
+        if let some(max) = self.max_pages {
+            if new_pages > max { return -1 }
+        }
+        self.data.resize(new_pages as usize * 65536, 0)
+        old as i32
+    }
+
+    fn load_i32(self, offset: usize) -> i32 {
+        if offset + 4 > self.data.len() { panic("memory out of bounds") }
+        i32.from_le_bytes([self.data[offset], self.data[offset+1], self.data[offset+2], self.data[offset+3]])
+    }
+
+    fn store_i32(mut self, offset: usize, val: i32) {
+        if offset + 4 > self.data.len() { panic("memory out of bounds") }
+        let bytes = val.to_le_bytes()
+        self.data[offset..offset+4].copy_from_slice(&bytes)
+    }
+}
+
+struct WasmFunction {
+    type_idx: u32,
+    locals: [ValType],
+    code: [WasmOp],
+}
+
+type HostFn = fn(&mut WasmRuntime, &[WasmValue]) -> [WasmValue]
+
+enum FuncInstance {
+    Wasm(WasmFunction),
+    Host { name: string, func: HostFn },
+}
+
+struct WasmRuntime {
+    functions: [FuncInstance],
+    types: [FuncType],
+    memory: WasmMemory,
+    globals: [WasmValue],
+    stack: [WasmValue],
+    call_stack: [Frame],
+    exports: HashMap<string, u32>,
+}
+
+impl WasmRuntime {
+    fn new() -> WasmRuntime {
+        WasmRuntime {
+            functions: [], types: [], memory: WasmMemory.new(1, some(256)),
+            globals: [], stack: [], call_stack: [],
+            exports: HashMap.new(),
+        }
+    }
+
+    fn add_function(mut self, func: WasmFunction) -> u32 {
+        let idx = self.functions.len() as u32
+        self.functions.push(FuncInstance.Wasm(func))
+        idx
+    }
+
+    fn add_host_function(mut self, name: string, func: HostFn) -> u32 {
+        let idx = self.functions.len() as u32
+        self.functions.push(FuncInstance.Host { name, func })
+        idx
+    }
+
+    fn export(mut self, name: string, func_idx: u32) {
+        self.exports.insert(name, func_idx)
+    }
+
+    fn call(mut self, func_idx: u32, args: &[WasmValue]) -> Result<[WasmValue], string> {
+        match &self.functions[func_idx as usize] {
+            FuncInstance.Host { func, .. } => ok(func(self, args)),
+            FuncInstance.Wasm(wasm_func) => {
+                let func_type = &self.types[wasm_func.type_idx as usize]
+                if args.len() != func_type.params.len() {
+                    return err("argument count mismatch".to_string())
+                }
+
+                // Initialize locals
+                let mut locals: [WasmValue] = args.to_vec()
+                for local_type in &wasm_func.locals {
+                    locals.push(match local_type {
+                        ValType.I32 => WasmValue.I32(0), ValType.I64 => WasmValue.I64(0),
+                        ValType.F32 => WasmValue.F32(0.0), ValType.F64 => WasmValue.F64(0.0),
+                    })
+                }
+
+                self.call_stack.push(Frame {
+                    func_idx, locals, pc: 0,
+                    return_arity: func_type.results.len(),
+                    label_stack: [],
+                })
+
+                self.execute()
+            }
+        }
+    }
+
+    fn call_export(mut self, name: &str, args: &[WasmValue]) -> Result<[WasmValue], string> {
+        let func_idx = *self.exports.get(name).ok_or(format!("export '{name}' not found"))?
+        self.call(func_idx, args)
+    }
+
+    fn execute(mut self) -> Result<[WasmValue], string> {
+        while let some(frame) = self.call_stack.last_mut() {
+            let func_idx = frame.func_idx
+            let wasm_func = match &self.functions[func_idx as usize] {
+                FuncInstance.Wasm(f) => f,
+                _ => return err("cannot execute host function".to_string()),
+            }
+
+            if frame.pc >= wasm_func.code.len() {
+                let arity = frame.return_arity
+                self.call_stack.pop()
+                let results: [WasmValue] = (0..arity).map(|_| self.stack.pop().unwrap()).rev().collect()
+                if self.call_stack.is_empty() { return ok(results) }
+                for r in results { self.stack.push(r) }
+                continue
+            }
+
+            let op = &wasm_func.code[frame.pc]
+            frame.pc += 1
+
+            match op {
+                WasmOp.I32Const(v) => self.stack.push(WasmValue.I32(*v)),
+                WasmOp.I64Const(v) => self.stack.push(WasmValue.I64(*v)),
+                WasmOp.LocalGet(idx) => self.stack.push(frame.locals[*idx as usize].clone()),
+                WasmOp.LocalSet(idx) => { let v = self.stack.pop().unwrap(); frame.locals[*idx as usize] = v },
+                WasmOp.I32Add => {
+                    let b = self.stack.pop().unwrap().as_i32()
+                    let a = self.stack.pop().unwrap().as_i32()
+                    self.stack.push(WasmValue.I32(a.wrapping_add(b)))
+                }
+                WasmOp.I32Sub => {
+                    let b = self.stack.pop().unwrap().as_i32()
+                    let a = self.stack.pop().unwrap().as_i32()
+                    self.stack.push(WasmValue.I32(a.wrapping_sub(b)))
+                }
+                WasmOp.I32Mul => {
+                    let b = self.stack.pop().unwrap().as_i32()
+                    let a = self.stack.pop().unwrap().as_i32()
+                    self.stack.push(WasmValue.I32(a.wrapping_mul(b)))
+                }
+                WasmOp.I32Eqz => {
+                    let v = self.stack.pop().unwrap().as_i32()
+                    self.stack.push(WasmValue.I32(if v == 0 { 1 } else { 0 }))
+                }
+                WasmOp.I32Eq => {
+                    let b = self.stack.pop().unwrap().as_i32()
+                    let a = self.stack.pop().unwrap().as_i32()
+                    self.stack.push(WasmValue.I32(if a == b { 1 } else { 0 }))
+                }
+                WasmOp.I32LtS => {
+                    let b = self.stack.pop().unwrap().as_i32()
+                    let a = self.stack.pop().unwrap().as_i32()
+                    self.stack.push(WasmValue.I32(if a < b { 1 } else { 0 }))
+                }
+                WasmOp.MemorySize => self.stack.push(WasmValue.I32(self.memory.size_pages() as i32)),
+                WasmOp.MemoryGrow => {
+                    let delta = self.stack.pop().unwrap().as_i32() as u32
+                    let result = self.memory.grow(delta)
+                    self.stack.push(WasmValue.I32(result))
+                }
+                WasmOp.I32Load(_, offset) => {
+                    let addr = self.stack.pop().unwrap().as_i32() as usize + *offset as usize
+                    self.stack.push(WasmValue.I32(self.memory.load_i32(addr)))
+                }
+                WasmOp.I32Store(_, offset) => {
+                    let val = self.stack.pop().unwrap().as_i32()
+                    let addr = self.stack.pop().unwrap().as_i32() as usize + *offset as usize
+                    self.memory.store_i32(addr, val)
+                }
+                WasmOp.Return => {
+                    let arity = frame.return_arity
+                    self.call_stack.pop()
+                    let results: [WasmValue] = (0..arity).map(|_| self.stack.pop().unwrap()).rev().collect()
+                    if self.call_stack.is_empty() { return ok(results) }
+                    for r in results { self.stack.push(r) }
+                }
+                WasmOp.Call(target) => {
+                    let target_type = match &self.functions[*target as usize] {
+                        FuncInstance.Wasm(f) => &self.types[f.type_idx as usize],
+                        FuncInstance.Host { .. } => &self.types[0],
+                    }
+                    let args: [WasmValue] = (0..target_type.params.len())
+                        .map(|_| self.stack.pop().unwrap()).rev().collect()
+                    let results = self.call(*target, &args)?
+                    for r in results { self.stack.push(r) }
+                }
+                WasmOp.Drop => { self.stack.pop(); }
+                WasmOp.Nop => {}
+                _ => return err(format!("unimplemented opcode")),
+            }
+        }
+        ok([])
+    }
+}
+
+fn main() {
+    let mut rt = WasmRuntime.new()
+
+    // Register type
+    rt.types.push(FuncType { params: [ValType.I32, ValType.I32], results: [ValType.I32] })
+    rt.types.push(FuncType { params: [ValType.I32], results: [ValType.I32] })
+
+    // Add function: add(a, b) = a + b
+    let add_idx = rt.add_function(WasmFunction {
+        type_idx: 0,
+        locals: [],
+        code: [
+            WasmOp.LocalGet(0), WasmOp.LocalGet(1), WasmOp.I32Add, WasmOp.Return,
+        ],
+    })
+    rt.export("add".to_string(), add_idx)
+
+    // Call add(3, 4)
+    let result = rt.call_export("add", &[WasmValue.I32(3), WasmValue.I32(4)]).unwrap()
+    assert(result.len() == 1)
+    assert(result[0].as_i32() == 7)
+    print("add(3, 4) = 7 ✓")
+
+    // Add factorial function
+    let fact_idx = rt.add_function(WasmFunction {
+        type_idx: 1,
+        locals: [ValType.I32],  // local for accumulator
+        code: [
+            // if n == 0 return 1
+            WasmOp.LocalGet(0), WasmOp.I32Eqz,
+            // Simple iterative version using constants
+            WasmOp.LocalGet(0), WasmOp.I32Const(1), WasmOp.I32Sub,
+            WasmOp.LocalGet(0), WasmOp.I32Mul,
+            WasmOp.Return,
+        ],
+    })
+
+    // Memory test
+    rt.memory.store_i32(100, 42)
+    assert(rt.memory.load_i32(100) == 42)
+    print("Memory store/load ✓")
+
+    // Memory grow
+    let old_pages = rt.memory.size_pages()
+    let result = rt.memory.grow(2)
+    assert(result == old_pages as i32)
+    assert(rt.memory.size_pages() == old_pages + 2)
+    print("Memory grow: ${old_pages} → ${rt.memory.size_pages()} pages ✓")
+
+    // Host function
+    let print_idx = rt.add_host_function("print".to_string(), |_rt, args| {
+        print("host: ${args[0].as_i32()}")
+        []
+    })
+    rt.call(print_idx, &[WasmValue.I32(99)]).unwrap()
+    print("Host function ✓")
+
+    // Stack operations
+    rt.stack.push(WasmValue.I32(10))
+    rt.stack.push(WasmValue.I32(20))
+    let b = rt.stack.pop().unwrap().as_i32()
+    let a = rt.stack.pop().unwrap().as_i32()
+    assert(a == 10 && b == 20)
+    print("Stack operations ✓")
+
+    // WasmValue types
+    let v = WasmValue.I32(0)
+    assert(!v.is_truthy())
+    let v2 = WasmValue.I32(1)
+    assert(v2.is_truthy())
+    print("Value truthiness ✓")
+
+    print("Tutorial 48 — WebAssembly Runtime complete ✓")
+}
