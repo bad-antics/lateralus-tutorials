@@ -1,0 +1,63 @@
+// section-31 — Macros and Metaprogramming in Lateralus
+
+// Declarative macros with macro_rules!
+macro_rules! vec {
+    () => { [] };
+    ($($x:expr),+ $(,)?) => { [$($x),+] };
+}
+
+macro_rules! assert_approx {
+    ($a:expr, $b:expr, $eps:expr) => {
+        let diff = ($a - $b).abs();
+        assert(diff < $eps, "expected ${$a} ≈ ${$b}, diff=${diff}");
+    };
+    ($a:expr, $b:expr) => { assert_approx!($a, $b, 1e-6) };
+}
+
+macro_rules! dbg {
+    ($x:expr) => {{
+        let v = $x;
+        print("[${file!()}:${line!()}] ${stringify!($x)} = ${v:?}");
+        v
+    }};
+}
+
+macro_rules! todo {
+    () => { panic!("not yet implemented") };
+    ($msg:literal) => { panic!("not yet implemented: ${$msg}") };
+}
+
+// Procedural macro: #[derive(Debug)] auto-generates display
+#[derive(Debug, Clone, PartialEq)]
+struct Point { x: float, y: float }
+
+// Custom derive example: #[derive(Builder)]
+#[derive(Builder)]
+struct Config {
+    host:    string,
+    port:    int,
+    timeout: int,
+    debug:   bool,
+}
+// Generates: ConfigBuilder.new().host("...").port(8080).timeout(30).build()
+
+fn main() {
+    let v = vec![1, 2, 3, 4, 5]
+    assert(v.len() == 5)
+
+    assert_approx!(3.14159, std.math.PI, 0.001)
+
+    let x = dbg!(2 + 2)
+    assert(x == 4)
+
+    // Builder pattern from derive macro
+    let cfg = ConfigBuilder.new()
+        .host("localhost".to_string())
+        .port(8080)
+        .timeout(30)
+        .debug(true)
+        .build()
+    assert(cfg.port == 8080)
+
+    print("section 31 macros — all assertions passed ✓")
+}
