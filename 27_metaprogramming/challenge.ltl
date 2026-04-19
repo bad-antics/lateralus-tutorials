@@ -1,0 +1,74 @@
+// 27_metaprogramming/challenge.ltl — ORM-style query builder
+// Run: lateralus run 27_metaprogramming/challenge.ltl
+
+use std.meta.{field_names, type_name}
+
+// Challenge: build a type-safe query builder using reflection
+//   User.query().where("age", ">", 18).order_by("name").limit(10).to_sql()
+// should produce:
+//   SELECT id,name,age FROM users WHERE age > 18 ORDER BY name LIMIT 10
+
+#[derive(Reflect)]
+struct User {
+    id:   int,
+    name: string,
+    age:  int,
+}
+
+struct QueryBuilder<T: Reflect> {
+    table:      string,
+    conditions: [string],
+    order:      string?,
+    limit_n:    int?,
+}
+
+impl<T: Reflect> QueryBuilder<T> {
+    fn new() -> QueryBuilder<T> {
+        let table = type_name<T>().to_lowercase() + "s"
+        QueryBuilder { table, conditions: [], order: none, limit_n: none }
+    }
+
+    fn where_clause(mut self, field: string, op: string, val: string) -> QueryBuilder<T> {
+        self.conditions.push("${field} ${op} ${val}")
+        self
+    }
+
+    fn order_by(mut self, field: string) -> QueryBuilder<T> {
+        self.order = some(field)
+        self
+    }
+
+    fn limit(mut self, n: int) -> QueryBuilder<T> {
+        self.limit_n = some(n)
+        self
+    }
+
+    fn to_sql(self) -> string {
+        let cols    = field_names<T>().join(",")
+        mut sql     = "SELECT ${cols} FROM ${self.table}"
+        if !self.conditions.is_empty() {
+            sql += " WHERE ${self.conditions.join(" AND ")}"
+        }
+        if let some(o) = self.order   { sql += " ORDER BY ${o}" }
+        if let some(n) = self.limit_n { sql += " LIMIT ${n}" }
+        sql
+    }
+}
+
+impl User {
+    fn query() -> QueryBuilder<User> { QueryBuilder.new() }
+}
+
+fn main() {
+    let sql = User.query()
+        .where_clause("age", ">", "18")
+        .order_by("name")
+        .limit(10)
+        .to_sql()
+
+    print(sql)
+    assert_eq(sql, "SELECT id,name,age FROM users WHERE age > 18 ORDER BY name LIMIT 10")
+    print("Challenge 27 complete!")
+}
+
+main()
