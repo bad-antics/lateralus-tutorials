@@ -1,0 +1,60 @@
+// 28_dsl/practice.ltl — SQL-like query DSL
+// Run: lateralus run 28_dsl/practice.ltl
+
+struct QueryDSL {
+    source:  [dict<string, string>],
+    filters: [fn(dict<string, string>) -> bool],
+    columns: [string],
+    limit_n: int?,
+}
+
+fn from_data(data: [dict<string, string>]) -> QueryDSL {
+    QueryDSL { source: data, filters: [], columns: [], limit_n: none }
+}
+
+impl QueryDSL {
+    fn select(mut self, cols: [string]) -> QueryDSL {
+        self.columns = cols
+        self
+    }
+
+    fn where_clause(mut self, f: fn(dict<string, string>) -> bool) -> QueryDSL {
+        self.filters.push(f)
+        self
+    }
+
+    fn limit(mut self, n: int) -> QueryDSL {
+        self.limit_n = some(n)
+        self
+    }
+
+    fn execute(self) -> [dict<string, string>] {
+        mut result = self.source.clone()
+        for f in self.filters { result = result |> filter(f) |> collect() }
+        if let some(n) = self.limit_n { result = result |> take(n) |> collect() }
+        if !self.columns.is_empty() {
+            result = result |> map(row => {
+                self.columns |> map(col => (col, row.get(col) ?? "")) |> collect_dict()
+            }) |> collect()
+        }
+        result
+    }
+}
+
+fn main() {
+    let data = [
+        { "name": "Alice", "age": "30", "dept": "Engineering" },
+        { "name": "Bob",   "age": "25", "dept": "Marketing" },
+        { "name": "Carol", "age": "35", "dept": "Engineering" },
+        { "name": "Dave",  "age": "28", "dept": "Design" },
+    ]
+
+    let result = from_data(data)
+        .select(["name", "age"])
+        .where_clause(row => row["dept"] == "Engineering")
+        .execute()
+
+    for row in result { print(row) }
+}
+
+main()
