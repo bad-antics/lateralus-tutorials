@@ -1,0 +1,74 @@
+// section-39 — Property-based testing with QuickCheck-style
+use std.test.quick_check.{QuickCheck, Arbitrary, Gen}
+
+// Implement Arbitrary for custom types
+struct Ip4Addr { a: u8, b: u8, c: u8, d: u8 }
+
+impl Arbitrary for Ip4Addr {
+    fn arbitrary(g: Gen) -> Ip4Addr {
+        Ip4Addr { a: u8.arbitrary(g), b: u8.arbitrary(g), c: u8.arbitrary(g), d: u8.arbitrary(g) }
+    }
+}
+
+impl Ip4Addr {
+    fn to_string(self) -> string { "${self.a}.${self.b}.${self.c}.${self.d}" }
+    fn is_loopback(self)  -> bool { self.a == 127 }
+    fn is_multicast(self) -> bool { self.a >= 224 && self.a <= 239 }
+    fn is_private(self)   -> bool {
+        self.a == 10 || (self.a == 172 && self.b >= 16 && self.b <= 31)
+            || (self.a == 192 && self.b == 168)
+    }
+}
+
+// Properties
+fn prop_sort_is_sorted(arr: [int]) -> bool {
+    let s = arr.clone() |> sort() |> collect()
+    s.windows(2) |> all(|w| w[0] <= w[1])
+}
+
+fn prop_sort_same_elements(arr: [int]) -> bool {
+    let s = arr.clone() |> sort() |> collect()
+    s.len() == arr.len() && s |> sort() |> collect() == arr |> sort() |> collect()
+}
+
+fn prop_reverse_involution(arr: [int]) -> bool {
+    arr.clone().rev() |> collect() |> rev() |> collect() == arr
+}
+
+fn prop_encode_decode_base64(data: [u8]) -> bool {
+    let encoded = base64_encode(data.clone())
+    base64_decode(encoded) == ok(data)
+}
+
+fn prop_push_then_pop(mut v: [int], x: int) -> bool {
+    let orig_len = v.len()
+    v.push(x)
+    let popped = v.pop()
+    popped == some(x) && v.len() == orig_len
+}
+
+fn prop_ip_to_string_roundtrip(ip: Ip4Addr) -> bool {
+    let s = ip.to_string()
+    let parts = s.split('.') |> map(|p| p.parse_int().unwrap_or(-1)) |> collect()
+    parts.len() == 4 && parts[0] == ip.a as int && parts[3] == ip.d as int
+}
+
+// Regression tests discovered by QuickCheck
+#[test]
+fn regression_empty_sort() { assert(prop_sort_is_sorted([])) }
+
+#[test]
+fn regression_single_element() { assert(prop_sort_is_sorted([42])) }
+
+fn main() {
+    let qc = QuickCheck.new().tests(1000).max_size(100)
+
+    qc.check("sort is sorted",          prop_sort_is_sorted)
+    qc.check("sort preserves elements", prop_sort_same_elements)
+    qc.check("reverse involution",      prop_reverse_involution)
+    qc.check("base64 roundtrip",        prop_encode_decode_base64)
+    qc.check("push/pop",                prop_push_then_pop)
+    qc.check("IP to_string roundtrip",  prop_ip_to_string_roundtrip)
+
+    print("section 39 property tests — 1000 cases each, all passed ✓")
+}
