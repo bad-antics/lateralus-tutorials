@@ -1,0 +1,96 @@
+// section-35 — Generics deep-dive: HKTs, associated types, const generics
+
+// ── Const generics ────────────────────────────────────────────────────────────
+struct Matrix<T: Copy + Default, const R: usize, const C: usize> {
+    data: [[T; C]; R],
+}
+
+impl<T: Copy + Default + std.ops.Add + std.ops.Mul, const R: usize, const C: usize, const K: usize>
+    Matrix<T, R, C>
+{
+    fn zero() -> Matrix<T, R, C> {
+        Matrix { data: [[T.default(); C]; R] }
+    }
+
+    fn mul(self, other: Matrix<T, C, K>) -> Matrix<T, R, K> {
+        let mut out: Matrix<T, R, K> = Matrix.zero()
+        for i in range(0, R) {
+            for j in range(0, K) {
+                for k in range(0, C) {
+                    out.data[i][j] = out.data[i][j] + self.data[i][k] * other.data[k][j]
+                }
+            }
+        }
+        out
+    }
+}
+
+// ── Associated types ──────────────────────────────────────────────────────────
+trait Graph {
+    type Node: Clone + std.hash.Hash + Eq
+    type Edge: Clone
+
+    fn nodes(self) -> [Self.Node]
+    fn edges(self) -> [Self.Edge]
+    fn neighbors(self, n: Self.Node) -> [Self.Node]
+}
+
+struct AdjList { edges: dict<int, [int]> }
+
+impl Graph for AdjList {
+    type Node = int
+    type Edge = (int, int)
+
+    fn nodes(self) -> [int]    { self.edges.keys() |> collect() }
+    fn edges(self) -> [(int,int)] {
+        self.edges |> flat_map(|(u, vs)| vs |> map(|v| (u, v))) |> collect()
+    }
+    fn neighbors(self, n: int) -> [int] { self.edges.get(n).cloned() ?? [] }
+}
+
+fn bfs<G: Graph>(g: G, start: G.Node) -> [G.Node] {
+    let mut visited: set<G.Node> = set()
+    let mut queue   = [start.clone()]
+    let mut order   = []
+    while !queue.is_empty() {
+        let node = queue.remove(0)
+        if visited.contains(&node) { continue }
+        visited.insert(node.clone())
+        order.push(node.clone())
+        for nb in g.neighbors(node) {
+            if !visited.contains(&nb) { queue.push(nb) }
+        }
+    }
+    order
+}
+
+// ── HRTB (Higher-Ranked Trait Bounds) ─────────────────────────────────────────
+fn apply_to_ref<F>(f: F, x: int) -> int
+where F: for<'a> Fn(&'a int) -> int
+{
+    f(&x)
+}
+
+fn main() {
+    // Const generics matrix multiply: (2x3) * (3x2) = (2x2)
+    let a: Matrix<int, 2, 3> = Matrix { data: [[1,2,3],[4,5,6]] }
+    let b: Matrix<int, 3, 2> = Matrix { data: [[7,8],[9,10],[11,12]] }
+    let c = a.mul(b)
+    assert(c.data[0][0] == 58)
+    assert(c.data[1][1] == 154)
+    print("Const generic matrix mul ✓")
+
+    // Associated types
+    let g = AdjList { edges: {1: [2,3], 2: [4], 3: [4], 4: []} }
+    let order = bfs(g, 1)
+    assert(order[0] == 1)
+    assert(order |> collect_set() == set![1,2,3,4])
+    print("BFS with associated types ✓")
+
+    // HRTB
+    let double = apply_to_ref(|x: &int| *x * 2, 21)
+    assert(double == 42)
+    print("HRTB closure ✓")
+
+    print("section 35 generics advanced — all passed ✓")
+}
