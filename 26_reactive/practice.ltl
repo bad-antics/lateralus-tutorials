@@ -1,0 +1,44 @@
+// 26_reactive/practice.ltl — Reactive programming exercises
+// Run: lateralus run 26_reactive/practice.ltl
+
+use std.reactive.{Subject, Observable}
+use std.time.{interval, Duration}
+
+// 1. Create a temperature stream that emits values every 500ms
+//    and alerts when temp > 100
+fn temperature_monitor() {
+    let temps: Subject<float> = Subject.new()
+
+    let alerts = temps.as_observable()
+        |> filter(t => t > 100.0)
+        |> map(t => "ALERT: ${t}°C exceeds limit!")
+
+    alerts.subscribe(print)
+
+    [22.5, 45.0, 78.3, 101.2, 99.9, 102.0]
+        |> each(t => temps.emit(t))
+}
+
+// 2. Debounce a search input stream
+fn search_demo() {
+    let input: Subject<string> = Subject.new()
+
+    input.as_observable()
+        |> debounce(Duration.ms(300))
+        |> distinct_until_changed()
+        |> filter(s => s.len() >= 2)
+        |> subscribe(q => print("Searching: ${q}"))
+
+    ["l", "la", "lat", "late", "later", "latera", "lateral", "lateralu", "lateralus"]
+        |> each(s => input.emit(s))
+}
+
+fn main() {
+    print("=== Temperature Monitor ===")
+    temperature_monitor()
+    print("
+=== Search Debounce ===")
+    search_demo()
+}
+
+main()
