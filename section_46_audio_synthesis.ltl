@@ -1,0 +1,265 @@
+// Tutorial 46 — Audio Synthesis & DSP
+// Generate waveforms, apply filters, build a simple synthesizer.
+
+use std.math.{PI, sin, cos, pow, sqrt, log2}
+
+const SAMPLE_RATE: f64 = 44100.0
+
+// ── Oscillators ──────────────────────────────────────────────────────────────
+enum Waveform { Sine, Square, Sawtooth, Triangle, Noise }
+
+struct Oscillator {
+    waveform: Waveform,
+    frequency: f64,
+    phase: f64,
+    amplitude: f64,
+}
+
+impl Oscillator {
+    fn new(waveform: Waveform, frequency: f64) -> Oscillator {
+        Oscillator { waveform, frequency, phase: 0.0, amplitude: 1.0 }
+    }
+
+    fn next_sample(mut self) -> f64 {
+        let sample = match self.waveform {
+            Waveform.Sine     => sin(2.0 * PI * self.phase),
+            Waveform.Square   => if self.phase < 0.5 { 1.0 } else { -1.0 },
+            Waveform.Sawtooth => 2.0 * self.phase - 1.0,
+            Waveform.Triangle => 4.0 * (self.phase - (self.phase + 0.5).floor()).abs() - 1.0,
+            Waveform.Noise    => random_f64() * 2.0 - 1.0,
+        }
+        self.phase += self.frequency / SAMPLE_RATE
+        if self.phase >= 1.0 { self.phase -= 1.0 }
+        sample * self.amplitude
+    }
+
+    fn generate(mut self, duration_secs: f64) -> [f64] {
+        let n = (duration_secs * SAMPLE_RATE) as usize
+        (0..n).map(|_| self.next_sample()).collect()
+    }
+}
+
+// ── ADSR Envelope ────────────────────────────────────────────────────────────
+struct Envelope {
+    attack:  f64,  // seconds
+    decay:   f64,
+    sustain: f64,  // level 0..1
+    release: f64,
+}
+
+impl Envelope {
+    fn new(attack: f64, decay: f64, sustain: f64, release: f64) -> Envelope {
+        Envelope { attack, decay, sustain, release }
+    }
+
+    fn apply(self, samples: &mut [f64], note_off_sample: usize) {
+        let attack_samples = (self.attack * SAMPLE_RATE) as usize
+        let decay_samples = (self.decay * SAMPLE_RATE) as usize
+        let release_samples = (self.release * SAMPLE_RATE) as usize
+
+        for (i, sample) in samples.iter_mut().enumerate() {
+            let gain = if i < attack_samples {
+                // Attack phase: linear ramp
+                i as f64 / attack_samples as f64
+            } else if i < attack_samples + decay_samples {
+                // Decay phase: linear to sustain
+                let t = (i - attack_samples) as f64 / decay_samples as f64
+                1.0 - t * (1.0 - self.sustain)
+            } else if i < note_off_sample {
+                // Sustain phase
+                self.sustain
+            } else {
+                // Release phase
+                let rel_pos = i - note_off_sample
+                if rel_pos < release_samples {
+                    self.sustain * (1.0 - rel_pos as f64 / release_samples as f64)
+                } else { 0.0 }
+            }
+            *sample *= gain
+        }
+    }
+}
+
+// ── Biquad filter ────────────────────────────────────────────────────────────
+enum FilterType { LowPass, HighPass, BandPass, Notch }
+
+struct BiquadFilter {
+    b0: f64, b1: f64, b2: f64, a1: f64, a2: f64,
+    x1: f64, x2: f64, y1: f64, y2: f64,
+}
+
+impl BiquadFilter {
+    fn new(filter_type: FilterType, cutoff: f64, q: f64) -> BiquadFilter {
+        let w0 = 2.0 * PI * cutoff / SAMPLE_RATE
+        let alpha = sin(w0) / (2.0 * q)
+        let cos_w0 = cos(w0)
+
+        let (b0, b1, b2, a0, a1, a2) = match filter_type {
+            FilterType.LowPass => {
+                let b0 = (1.0 - cos_w0) / 2.0
+                (b0, 1.0 - cos_w0, b0, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
+            }
+            FilterType.HighPass => {
+                let b0 = (1.0 + cos_w0) / 2.0
+                (b0, -(1.0 + cos_w0), b0, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
+            }
+            FilterType.BandPass => {
+                (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
+            }
+            FilterType.Notch => {
+                (1.0, -2.0 * cos_w0, 1.0, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
+            }
+        }
+
+        BiquadFilter {
+            b0: b0/a0, b1: b1/a0, b2: b2/a0, a1: a1/a0, a2: a2/a0,
+            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+        }
+    }
+
+    fn process(mut self, input: f64) -> f64 {
+        let output = self.b0 * input + self.b1 * self.x1 + self.b2 * self.x2
+                   - self.a1 * self.y1 - self.a2 * self.y2
+        self.x2 = self.x1; self.x1 = input
+        self.y2 = self.y1; self.y1 = output
+        output
+    }
+
+    fn process_buffer(mut self, buffer: &mut [f64]) {
+        for sample in buffer.iter_mut() { *sample = self.process(*sample) }
+    }
+}
+
+// ── Delay / echo ─────────────────────────────────────────────────────────────
+struct Delay {
+    buffer: [f64],
+    write_pos: usize,
+    delay_samples: usize,
+    feedback: f64,
+    mix: f64,
+}
+
+impl Delay {
+    fn new(delay_ms: f64, feedback: f64, mix: f64) -> Delay {
+        let delay_samples = (delay_ms * SAMPLE_RATE / 1000.0) as usize
+        Delay {
+            buffer: vec![0.0; delay_samples + 1],
+            write_pos: 0, delay_samples, feedback, mix,
+        }
+    }
+
+    fn process(mut self, input: f64) -> f64 {
+        let read_pos = (self.write_pos + self.buffer.len() - self.delay_samples) % self.buffer.len()
+        let delayed = self.buffer[read_pos]
+        self.buffer[self.write_pos] = input + delayed * self.feedback
+        self.write_pos = (self.write_pos + 1) % self.buffer.len()
+        input * (1.0 - self.mix) + delayed * self.mix
+    }
+}
+
+// ── MIDI note to frequency ───────────────────────────────────────────────────
+fn midi_to_freq(note: u8) -> f64 { 440.0 * pow(2.0, (note as f64 - 69.0) / 12.0) }
+fn freq_to_midi(freq: f64) -> u8 { (69.0 + 12.0 * log2(freq / 440.0)).round() as u8 }
+
+// ── Simple synth voice ──────────────────────────────────────────────────────
+struct Voice {
+    osc1: Oscillator,
+    osc2: Oscillator,
+    filter: BiquadFilter,
+    envelope: Envelope,
+    active: bool,
+    samples_elapsed: usize,
+    note_off_sample: usize,
+}
+
+impl Voice {
+    fn new(note: u8) -> Voice {
+        let freq = midi_to_freq(note)
+        Voice {
+            osc1: Oscillator.new(Waveform.Sawtooth, freq),
+            osc2: Oscillator.new(Waveform.Square, freq * 1.005),  // slight detune
+            filter: BiquadFilter.new(FilterType.LowPass, 2000.0, 0.707),
+            envelope: Envelope.new(0.01, 0.1, 0.7, 0.3),
+            active: true, samples_elapsed: 0, note_off_sample: usize.MAX,
+        }
+    }
+
+    fn note_off(mut self) { self.note_off_sample = self.samples_elapsed }
+
+    fn next_sample(mut self) -> f64 {
+        if !self.active { return 0.0 }
+        let raw = self.osc1.next_sample() * 0.5 + self.osc2.next_sample() * 0.5
+        let filtered = self.filter.process(raw)
+        self.samples_elapsed += 1
+        filtered
+    }
+}
+
+// ── Helper ───────────────────────────────────────────────────────────────────
+fn random_f64() -> f64 {
+    // LCG for deterministic "noise"
+    static mut SEED: u64 = 12345
+    unsafe {
+        SEED = SEED.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
+        (SEED >> 33) as f64 / (1u64 << 31) as f64
+    }
+}
+
+fn rms(samples: &[f64]) -> f64 {
+    let sum_sq: f64 = samples.iter().map(|s| s * s).sum()
+    sqrt(sum_sq / samples.len() as f64)
+}
+
+fn main() {
+    // Oscillator test
+    let mut sine = Oscillator.new(Waveform.Sine, 440.0)
+    let samples = sine.generate(0.01)  // 10ms = 441 samples
+    assert(samples.len() == 441)
+    assert(samples[0].abs() < 0.01)  // starts near zero
+    print("Sine oscillator: ${samples.len()} samples ✓")
+
+    // Square wave
+    let mut sq = Oscillator.new(Waveform.Square, 1000.0)
+    let sq_samples = sq.generate(0.001)
+    assert(sq_samples.iter().all(|s| (*s - 1.0).abs() < 0.01 || (*s + 1.0).abs() < 0.01))
+    print("Square wave ✓")
+
+    // MIDI conversion
+    assert((midi_to_freq(69) - 440.0).abs() < 0.01)  // A4
+    assert((midi_to_freq(60) - 261.63).abs() < 0.1)  // C4
+    assert(freq_to_midi(440.0) == 69)
+    print("MIDI ↔ frequency ✓")
+
+    // Envelope
+    let mut test_buf = vec![1.0; 44100]  // 1 second of unity
+    let env = Envelope.new(0.1, 0.2, 0.5, 0.3)
+    env.apply(&mut test_buf, 30000)
+    assert(test_buf[0].abs() < 0.01)  // attack starts at 0
+    assert((test_buf[4410] - 1.0).abs() < 0.05)  // peak at end of attack
+    print("ADSR envelope ✓")
+
+    // Filter
+    let mut lpf = BiquadFilter.new(FilterType.LowPass, 1000.0, 0.707)
+    let val = lpf.process(1.0)
+    assert(val.is_finite())
+    print("Biquad filter ✓")
+
+    // Delay
+    let mut delay = Delay.new(100.0, 0.5, 0.5)
+    let d1 = delay.process(1.0)
+    assert((d1 - 0.5).abs() < 0.01)  // dry*0.5 + wet*0.5 (wet=0 initially)
+    print("Delay ✓")
+
+    // RMS
+    let test_signal = [1.0, -1.0, 1.0, -1.0]
+    assert((rms(&test_signal) - 1.0).abs() < 0.001)
+    print("RMS = ${rms(&test_signal):.3} ✓")
+
+    // Voice
+    let mut voice = Voice.new(60)  // Middle C
+    let v_sample = voice.next_sample()
+    assert(v_sample.is_finite())
+    print("Synth voice ✓")
+
+    print("Tutorial 46 — Audio Synthesis complete ✓")
+}
