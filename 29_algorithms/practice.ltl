@@ -1,0 +1,49 @@
+// 29_algorithms/practice.ltl — Algorithm practice
+// Run: lateralus run 29_algorithms/practice.ltl
+
+// 1. Implement Dutch National Flag (3-way partition)
+fn dnf<T: Ord>(mut arr: [T], pivot: T) -> [T] {
+    // Partition into [<pivot, ==pivot, >pivot]
+    let lt = arr |> filter(x => x < pivot)  |> collect()
+    let eq = arr |> filter(x => x == pivot) |> collect()
+    let gt = arr |> filter(x => x > pivot)  |> collect()
+    [...lt, ...eq, ...gt]
+}
+
+// 2. Longest common subsequence
+fn lcs(a: string, b: string) -> string {
+    let m = a.len()
+    let n = b.len()
+    mut dp = range(0, m + 1) |> map(_ => vec![0; n + 1]) |> collect()
+    for i in range(1, m + 1) {
+        for j in range(1, n + 1) {
+            if a[i-1] == b[j-1] {
+                dp[i][j] = dp[i-1][j-1] + 1
+            } else {
+                dp[i][j] = dp[i-1][j].max(dp[i][j-1])
+            }
+        }
+    }
+    // Backtrack
+    mut result = ""
+    mut i = m
+    mut j = n
+    while i > 0 && j > 0 {
+        if a[i-1] == b[j-1]        { result = a[i-1].to_string() + result; i -= 1; j -= 1 }
+        else if dp[i-1][j] > dp[i][j-1] { i -= 1 }
+        else                             { j -= 1 }
+    }
+    result
+}
+
+fn main() {
+    let partitioned = dnf([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], 5)
+    print("DNF partition around 5: ${partitioned}")
+
+    let common = lcs("ABCBDAB", "BDCAB")
+    print("LCS of ABCBDAB & BDCAB: ${common}")
+    assert_eq(common.len(), 4)
+    print("Practice 29 complete!")
+}
+
+main()
