@@ -1,0 +1,117 @@
+// section-32 — Advanced Type System Features
+
+// ── Newtype pattern ────────────────────────────────────────────────────────────
+struct Metres(float)
+struct Seconds(float)
+struct MetresPerSecond(float)
+
+fn speed(d: Metres, t: Seconds) -> MetresPerSecond {
+    MetresPerSecond(d.0 / t.0)
+}
+
+// ── Phantom types ─────────────────────────────────────────────────────────────
+struct Validated;
+struct Unvalidated;
+
+struct Email<State> {
+    address: string,
+    _state:  PhantomData<State>,
+}
+
+impl Email<Unvalidated> {
+    fn new(address: string) -> Email<Unvalidated> {
+        Email { address, _state: PhantomData }
+    }
+
+    fn validate(self) -> Result<Email<Validated>, string> {
+        if self.address.contains('@') && self.address.contains('.') {
+            ok(Email { address: self.address, _state: PhantomData })
+        } else {
+            err("invalid email: ${self.address}")
+        }
+    }
+}
+
+impl Email<Validated> {
+    fn send(self, message: string) {
+        print("Sending to ${self.address}: ${message}")
+    }
+}
+
+// ── Higher-kinded types (trait aliases) ───────────────────────────────────────
+trait Functor<F<_>> {
+    fn fmap<A, B>(self: F<A>, f: fn(A) -> B) -> F<B>
+}
+
+// ── Type-level state machines ─────────────────────────────────────────────────
+struct Locked;
+struct Unlocked;
+
+struct Safe<State> { balance: float, _s: PhantomData<State> }
+
+impl Safe<Locked> {
+    fn new(balance: float) -> Safe<Locked> { Safe { balance, _s: PhantomData } }
+    fn unlock(self, code: int) -> Result<Safe<Unlocked>, string> {
+        if code == 1234 { ok(Safe { balance: self.balance, _s: PhantomData }) }
+        else { err("wrong code") }
+    }
+}
+
+impl Safe<Unlocked> {
+    fn withdraw(mut self, amount: float) -> Result<(float, Safe<Unlocked>), string> {
+        if amount > self.balance { return err("insufficient funds") }
+        self.balance -= amount
+        ok((amount, self))
+    }
+    fn lock(self) -> Safe<Locked> { Safe { balance: self.balance, _s: PhantomData } }
+}
+
+// ── GADTs via enums ───────────────────────────────────────────────────────────
+enum Expr<T> {
+    Lit(T),
+    Add(Box<Expr<int>>, Box<Expr<int>>),
+    Eq(Box<Expr<int>>, Box<Expr<int>>),
+    If(Box<Expr<bool>>, Box<Expr<T>>, Box<Expr<T>>),
+}
+
+fn eval<T>(e: Expr<T>) -> T {
+    match e {
+        Expr.Lit(v)           => v,
+        Expr.Add(a, b)        => eval(*a) + eval(*b),
+        Expr.Eq(a, b)         => eval(*a) == eval(*b),
+        Expr.If(cond, t, f)   => if eval(*cond) { eval(*t) } else { eval(*f) },
+    }
+}
+
+fn main() {
+    // Newtype
+    let v = speed(Metres(100.0), Seconds(9.58))
+    print("100m sprint: ${v.0:.2} m/s ✓")
+
+    // Phantom types prevent sending unvalidated emails at compile time
+    let raw   = Email.new("alice@example.com")
+    let valid = raw.validate().unwrap()
+    valid.send("Hello!")
+    assert(Email.new("notanemail").validate().is_err())
+    print("Phantom email ✓")
+
+    // Type-level safe
+    let safe    = Safe.new(1000.0)
+    let open    = safe.unlock(1234).unwrap()
+    let (cash, open) = open.withdraw(200.0).unwrap()
+    let locked  = open.lock()
+    assert(cash == 200.0)
+    // safe.withdraw(...)  // compile error: Safe<Locked> has no withdraw
+    print("Type-level safe: withdrew ${cash} ✓")
+
+    // GADT expression evaluator
+    let expr: Expr<int> = Expr.If(
+        Box.new(Expr.Eq(Box.new(Expr.Lit(2)), Box.new(Expr.Add(Box.new(Expr.Lit(1)), Box.new(Expr.Lit(1)))))),
+        Box.new(Expr.Lit(42)),
+        Box.new(Expr.Lit(0)),
+    )
+    assert(eval(expr) == 42)
+    print("GADT eval ✓")
+
+    print("section 32 advanced types — all passed ✓")
+}
