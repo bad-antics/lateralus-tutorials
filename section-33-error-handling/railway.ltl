@@ -1,0 +1,98 @@
+// section-33 — Railway-oriented error handling
+
+// The ? operator and Result chaining
+fn parse_int_range(s: string, lo: int, hi: int) -> Result<int, string> {
+    let n = s.trim().parse_int().map_err(|_| "not a number: '${s}'")?
+    if n < lo { return err("${n} is below minimum ${lo}") }
+    if n > hi { return err("${n} is above maximum ${hi}") }
+    ok(n)
+}
+
+// Collecting a list of Results
+fn parse_all(inputs: [string]) -> Result<[int], string> {
+    inputs |> map(|s| s.parse_int().map_err(|_| "bad value: ${s}")) |> collect_result()
+}
+
+// Partition into successes and failures
+fn parse_partition(inputs: [string]) -> ([int], [string]) {
+    inputs |> map(|s| s.parse_int().map_err(|_| "bad: ${s}"))
+           |> partition_result()
+}
+
+// Custom error type with context
+enum AppError {
+    ParseError(string),
+    ValidationError { field: string, reason: string },
+    DbError(string),
+    NetworkError { code: int, message: string },
+}
+
+impl AppError {
+    fn context(self, msg: string) -> AppError {
+        match self {
+            AppError.ParseError(s)    => AppError.ParseError("${msg}: ${s}"),
+            AppError.DbError(s)       => AppError.DbError("${msg}: ${s}"),
+            other => other,
+        }
+    }
+}
+
+impl std.fmt.Display for AppError {
+    fn fmt(self) -> string {
+        match self {
+            AppError.ParseError(s)                 => "parse error: ${s}",
+            AppError.ValidationError { field, reason } => "validation error on '${field}': ${reason}",
+            AppError.DbError(s)                    => "database error: ${s}",
+            AppError.NetworkError { code, message } => "network error ${code}: ${message}",
+        }
+    }
+}
+
+// From conversions for ? ergonomics
+impl From<std.num.ParseIntError> for AppError {
+    fn from(e: std.num.ParseIntError) -> AppError { AppError.ParseError(e.to_string()) }
+}
+
+fn process_user_age(input: string) -> Result<string, AppError> {
+    let age: int = input.parse()?   // auto-converts ParseIntError → AppError
+    if age < 0 || age > 150 {
+        return err(AppError.ValidationError { field: "age", reason: "must be 0–150" })
+    }
+    ok(if age >= 18 { "adult" } else { "minor" })
+}
+
+// Result as a monad: chain of operations
+fn pipeline(raw: string) -> Result<string, AppError> {
+    raw.trim().parse_int()
+        .map_err(AppError.ParseError)
+        .and_then(|n| if n > 0 { ok(n) } else { err(AppError.ValidationError { field: "value", reason: "must be positive" }) })
+        .map(|n| "result: ${n * 2}")
+}
+
+fn main() {
+    assert(parse_int_range("42",  0, 100) == ok(42))
+    assert(parse_int_range("200", 0, 100).is_err())
+    assert(parse_int_range("abc", 0, 100).is_err())
+    print("parse_int_range ✓")
+
+    assert(parse_all(["1","2","3"]) == ok([1,2,3]))
+    assert(parse_all(["1","x","3"]).is_err())
+    print("parse_all ✓")
+
+    let (oks, errs) = parse_partition(["1","x","2","y","3"])
+    assert(oks  == [1, 2, 3])
+    assert(errs.len() == 2)
+    print("parse_partition ✓")
+
+    assert(process_user_age("25") == ok("adult"))
+    assert(process_user_age("10") == ok("minor"))
+    assert(process_user_age("abc").is_err())
+    assert(process_user_age("999").is_err())
+    print("process_user_age ✓")
+
+    assert(pipeline("21") == ok("result: 42"))
+    assert(pipeline("-1").is_err())
+    print("pipeline ✓")
+
+    print("section 33 railway error handling — all passed ✓")
+}
