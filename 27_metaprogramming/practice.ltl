@@ -1,0 +1,42 @@
+// 27_metaprogramming/practice.ltl — Derive macros
+// Run: lateralus run 27_metaprogramming/practice.ltl
+
+// Implement a custom #[derive(ToJson)] macro that generates
+// a to_json() method for any struct with Reflect
+
+use std.json
+use std.meta.{field_names, field_values, type_name}
+
+trait ToJson {
+    fn to_json(self) -> json.Value
+}
+
+fn auto_to_json<T: Reflect>(v: T) -> json.Value {
+    let obj = field_names<T>()
+        |> zip(field_values(v).values())
+        |> map(|(k, v)| (k, v.to_json_value()))
+        |> json.object()
+    obj
+}
+
+#[derive(Reflect)]
+struct Product {
+    id:    int,
+    name:  string,
+    price: float,
+    tags:  [string],
+}
+
+fn main() {
+    let p = Product {
+        id:    42,
+        name:  "Lateralus Compiler",
+        price: 0.0,
+        tags:  ["open-source", "compiler", "free"],
+    }
+
+    let js = auto_to_json(p)
+    print(js.to_string_pretty())
+}
+
+main()
