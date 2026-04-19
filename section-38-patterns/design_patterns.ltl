@@ -1,0 +1,109 @@
+// section-38 — Design patterns in Lateralus
+
+// ── Strategy ──────────────────────────────────────────────────────────────────
+trait Sorter<T: Ord + Clone> {
+    fn sort(self, arr: [T]) -> [T]
+}
+
+struct QuickSort;
+struct MergeSort;
+struct InsertionSort;
+
+impl<T: Ord + Clone> Sorter<T> for QuickSort {
+    fn sort(self, arr: [T]) -> [T] {
+        if arr.len() <= 1 { return arr }
+        let pivot  = arr[arr.len() / 2].clone()
+        let left   = arr |> filter(|x| x < &pivot)  |> collect()
+        let mid    = arr |> filter(|x| x == &pivot)  |> collect()
+        let right  = arr |> filter(|x| x > &pivot)  |> collect()
+        [...self.sort(left), ...mid, ...self.sort(right)]
+    }
+}
+
+impl<T: Ord + Clone> Sorter<T> for InsertionSort {
+    fn sort(self, arr: [T]) -> [T] {
+        let mut out = arr.clone()
+        for i in range(1, out.len()) {
+            let key = out[i].clone()
+            let mut j = i as int - 1
+            while j >= 0 && out[j as usize] > key { out[(j+1) as usize] = out[j as usize].clone(); j -= 1 }
+            out[(j+1) as usize] = key
+        }
+        out
+    }
+}
+
+// ── Observer ──────────────────────────────────────────────────────────────────
+trait Observer<E: Clone> { fn on_event(self, event: E) }
+
+struct EventBus<E: Clone> {
+    observers: [Box<dyn Observer<E>>],
+}
+
+impl<E: Clone> EventBus<E> {
+    fn new() -> EventBus<E> { EventBus { observers: [] } }
+    fn subscribe(mut self, obs: Box<dyn Observer<E>>) { self.observers.push(obs) }
+    fn publish(self, event: E) {
+        for obs in self.observers { obs.on_event(event.clone()) }
+    }
+}
+
+// ── Command ───────────────────────────────────────────────────────────────────
+trait Command { fn execute(self); fn undo(self); }
+
+struct TextEditor { content: string, history: [Box<dyn Command>] }
+
+struct InsertCmd { editor: *mut TextEditor, pos: int, text: string }
+impl Command for InsertCmd {
+    fn execute(self) { unsafe { (*self.editor).content.insert_str(self.pos, self.text) } }
+    fn undo(self)    { unsafe { (*self.editor).content.drain(self.pos..self.pos+self.text.len()) } }
+}
+
+// ── Chain of Responsibility ────────────────────────────────────────────────────
+trait Handler<Req, Res> {
+    fn handle(self, req: Req, next: fn(Req) -> Res?) -> Res?
+}
+
+struct Pipeline<Req: Clone, Res> {
+    handlers: [Box<dyn Handler<Req, Res>>],
+}
+
+impl<Req: Clone, Res> Pipeline<Req, Res> {
+    fn new() -> Pipeline<Req, Res> { Pipeline { handlers: [] } }
+    fn use_handler(mut self, h: Box<dyn Handler<Req, Res>>) -> Pipeline<Req, Res> {
+        self.handlers.push(h); self
+    }
+    fn run(self, req: Req) -> Res? {
+        self.dispatch(req, 0)
+    }
+    fn dispatch(self, req: Req, idx: int) -> Res? {
+        if idx >= self.handlers.len() { return none }
+        let next_idx = idx + 1
+        self.handlers[idx].handle(req.clone(), |r| self.dispatch(r, next_idx))
+    }
+}
+
+fn main() {
+    // Strategy
+    let data = [5, 2, 8, 1, 9, 3, 7, 4, 6]
+    let sorted_q = QuickSort.sort(data.clone())
+    let sorted_i = InsertionSort.sort(data.clone())
+    assert(sorted_q == [1,2,3,4,5,6,7,8,9])
+    assert(sorted_i == [1,2,3,4,5,6,7,8,9])
+    print("Strategy (sort) ✓")
+
+    // Observer
+    let mut bus: EventBus<string> = EventBus.new()
+    let mut received: [string] = []
+    struct Recorder { buf: *mut [string] }
+    impl Observer<string> for Recorder {
+        fn on_event(self, e: string) { unsafe { (*self.buf).push(e) } }
+    }
+    bus.subscribe(Box.new(Recorder { buf: &mut received }))
+    bus.publish("event-1".to_string())
+    bus.publish("event-2".to_string())
+    assert(received == ["event-1", "event-2"])
+    print("Observer ✓")
+
+    print("section 38 design patterns — all passed ✓")
+}
