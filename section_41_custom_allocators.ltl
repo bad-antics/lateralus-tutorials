@@ -1,0 +1,182 @@
+// Tutorial 41 — Custom Memory Allocators
+// Learn to build arena, pool, and bump allocators for high-performance code.
+
+use std.alloc.{GlobalAlloc, Layout}
+use std.sync.Mutex
+
+// ── Bump allocator ───────────────────────────────────────────────────────────
+// Fast allocation by simply bumping a pointer. No individual deallocation.
+struct BumpAllocator {
+    arena:  [u8],
+    offset: usize,
+}
+
+impl BumpAllocator {
+    fn new(size: usize) -> BumpAllocator {
+        BumpAllocator { arena: vec![0u8; size], offset: 0 }
+    }
+
+    fn alloc(mut self, layout: Layout) -> Option<*mut u8> {
+        // Align the offset
+        let aligned = (self.offset + layout.align() - 1) & !(layout.align() - 1)
+        if aligned + layout.size() > self.arena.len() { return none }
+        self.offset = aligned + layout.size()
+        some(&mut self.arena[aligned] as *mut u8)
+    }
+
+    fn reset(mut self) { self.offset = 0 }
+    fn used(self) -> usize { self.offset }
+    fn remaining(self) -> usize { self.arena.len() - self.offset }
+}
+
+// ── Pool allocator ───────────────────────────────────────────────────────────
+// Fixed-size block allocator with free list.
+struct PoolAllocator {
+    block_size: usize,
+    pool:       [u8],
+    free_list:  [usize],  // indices of free blocks
+    capacity:   usize,
+    allocated:  usize,
+}
+
+impl PoolAllocator {
+    fn new(block_size: usize, count: usize) -> PoolAllocator {
+        let pool = vec![0u8; block_size * count]
+        let free_list: [usize] = (0..count).rev().collect()
+        PoolAllocator { block_size, pool, free_list, capacity: count, allocated: 0 }
+    }
+
+    fn alloc(mut self) -> Option<*mut u8> {
+        let idx = self.free_list.pop()?
+        self.allocated += 1
+        some(&mut self.pool[idx * self.block_size] as *mut u8)
+    }
+
+    fn dealloc(mut self, ptr: *mut u8) {
+        let offset = (ptr as usize) - (&self.pool[0] as *const u8 as usize)
+        let idx = offset / self.block_size
+        self.free_list.push(idx)
+        self.allocated -= 1
+    }
+
+    fn is_full(self) -> bool { self.free_list.is_empty() }
+    fn utilization(self) -> f64 { self.allocated as f64 / self.capacity as f64 }
+}
+
+// ── Arena allocator ──────────────────────────────────────────────────────────
+// Grows by adding chunks, frees all at once.
+struct Arena {
+    chunks:       [Box<[u8]>],
+    chunk_size:   usize,
+    current:      usize,  // index of current chunk
+    offset:       usize,  // offset within current chunk
+    total_allocated: usize,
+}
+
+impl Arena {
+    fn new(chunk_size: usize) -> Arena {
+        Arena {
+            chunks: [vec![0u8; chunk_size].into_boxed_slice()],
+            chunk_size, current: 0, offset: 0, total_allocated: 0,
+        }
+    }
+
+    fn alloc<T>(mut self) -> &mut T {
+        let layout = Layout.of::<T>()
+        let aligned = (self.offset + layout.align() - 1) & !(layout.align() - 1)
+
+        if aligned + layout.size() > self.chunk_size {
+            // Allocate new chunk
+            self.chunks.push(vec![0u8; self.chunk_size].into_boxed_slice())
+            self.current += 1
+            self.offset = 0
+            return self.alloc::<T>()
+        }
+
+        self.offset = aligned + layout.size()
+        self.total_allocated += layout.size()
+        unsafe { &mut *(self.chunks[self.current].as_mut_ptr().add(aligned) as *mut T) }
+    }
+
+    fn reset(mut self) {
+        self.current = 0
+        self.offset = 0
+        self.total_allocated = 0
+    }
+
+    fn chunks_used(self) -> usize { self.current + 1 }
+}
+
+// ── Slab allocator ───────────────────────────────────────────────────────────
+struct SlabAllocator {
+    small_pool:  PoolAllocator,  // 64-byte blocks
+    medium_pool: PoolAllocator,  // 256-byte blocks
+    large_pool:  PoolAllocator,  // 1024-byte blocks
+}
+
+impl SlabAllocator {
+    fn new() -> SlabAllocator {
+        SlabAllocator {
+            small_pool:  PoolAllocator.new(64, 1024),
+            medium_pool: PoolAllocator.new(256, 256),
+            large_pool:  PoolAllocator.new(1024, 64),
+        }
+    }
+
+    fn alloc(mut self, size: usize) -> Option<*mut u8> {
+        if size <= 64 { self.small_pool.alloc() }
+        else if size <= 256 { self.medium_pool.alloc() }
+        else if size <= 1024 { self.large_pool.alloc() }
+        else { none }  // too large for slab
+    }
+
+    fn stats(self) -> string {
+        format!("small: {:.0}%, medium: {:.0}%, large: {:.0}%",
+            self.small_pool.utilization() * 100.0,
+            self.medium_pool.utilization() * 100.0,
+            self.large_pool.utilization() * 100.0,
+        )
+    }
+}
+
+fn main() {
+    // Bump allocator
+    let mut bump = BumpAllocator.new(4096)
+    let layout = Layout.from_size_align(100, 8).unwrap()
+    let p1 = bump.alloc(layout)
+    assert(p1.is_some())
+    let p2 = bump.alloc(layout)
+    assert(p2.is_some())
+    print("Bump: used=${bump.used()}, remaining=${bump.remaining()}")
+    bump.reset()
+    assert(bump.used() == 0)
+    print("Bump allocator ✓")
+
+    // Pool allocator
+    let mut pool = PoolAllocator.new(128, 10)
+    let b1 = pool.alloc().unwrap()
+    let b2 = pool.alloc().unwrap()
+    assert(pool.allocated == 2)
+    pool.dealloc(b1)
+    assert(pool.allocated == 1)
+    print("Pool: utilization=${(pool.utilization() * 100.0):.0}%")
+    print("Pool allocator ✓")
+
+    // Arena allocator
+    let mut arena = Arena.new(1024)
+    for _ in range(0, 20) { let _: &mut u64 = arena.alloc() }
+    print("Arena: ${arena.chunks_used()} chunks, ${arena.total_allocated} bytes")
+    arena.reset()
+    assert(arena.total_allocated == 0)
+    print("Arena allocator ✓")
+
+    // Slab allocator
+    let mut slab = SlabAllocator.new()
+    for _ in range(0, 10) { slab.alloc(32); }
+    for _ in range(0, 5) { slab.alloc(200); }
+    for _ in range(0, 2) { slab.alloc(512); }
+    print("Slab: ${slab.stats()}")
+    print("Slab allocator ✓")
+
+    print("Tutorial 41 — Custom Allocators complete ✓")
+}
